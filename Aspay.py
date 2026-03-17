@@ -7240,8 +7240,9 @@ def sales_report_scheduler():
 
 
 # ▶️ START BACKGROUND REPORT THREAD
+
 # ================== START SERVER ==================
-if name == "main":
+if name == "__main__":
 
     if BOT_MODE == "webhook":
         print("🌐 Running in WEBHOOK mode")
