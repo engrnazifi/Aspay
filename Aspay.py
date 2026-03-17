@@ -704,8 +704,6 @@ Item names:
         return "ERROR", 500
 
 
-
-
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
     update = telebot.types.Update.de_json(
