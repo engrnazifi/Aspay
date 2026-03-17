@@ -393,9 +393,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ========= BOT =========
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
-# ========= FLASK =========
-app = Flask(name)
-
+app = Flask(__name__)
+# ========= FLASK
 
 import time
 
