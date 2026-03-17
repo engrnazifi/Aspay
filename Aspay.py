@@ -13,7 +13,7 @@ import os
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
-
+    
 def get_conn():
     try:
         c = psycopg2.connect(
@@ -30,6 +30,280 @@ conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
 
+
+# ==========================================
+# AUTO DB FIX: ENSURE invite_link COLUMN
+# ==========================================
+def ensure_vip_invite_column():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # Check if column exists
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='invite_link'
+        """)
+        exists = cur.fetchone()
+
+        if not exists:
+            cur.execute("""
+                ALTER TABLE vip_members
+                ADD COLUMN invite_link TEXT DEFAULT NULL
+            """)
+            conn.commit()
+
+            try:
+                bot.send_message(ADMIN_ID, "✅ invite_link column created successfully.")
+            except:
+                pass
+        else:
+            try:
+                bot.send_message(ADMIN_ID, "ℹ invite_link column already exists.")
+            except:
+                pass
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        try:
+            bot.send_message(ADMIN_ID, f"❌ DB AUTO FIX ERROR:\n{e}")
+        except:
+            pass
+
+
+# Run immediately on startup
+ensure_vip_invite_column()
+
+
+# ============================================
+# VIP TABLE AUTO STRUCTURE FIX (RUN ON START)
+# ============================================
+
+def ensure_vip_table_structure():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        print("🔍 Checking VIP table structure...")
+
+        # ================= CHECK TABLE =================
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'vip_members'
+            )
+        """)
+        table_exists = cur.fetchone()[0]
+
+        if not table_exists:
+            print("⚠️ vip_members table not found. Creating it...")
+
+            cur.execute("""
+                CREATE TABLE vip_members (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT UNIQUE NOT NULL,
+                    order_id TEXT,
+                    join_date TIMESTAMP,
+                    expire_at TIMESTAMP,
+                    status TEXT DEFAULT 'active',
+                    warn1_sent BOOLEAN DEFAULT FALSE,
+                    warn2_sent BOOLEAN DEFAULT FALSE,
+                    payment_date TIMESTAMP DEFAULT NOW()
+                )
+            """)
+
+            conn.commit()
+            print("✅ vip_members table created.")
+
+        else:
+            print("✅ vip_members table exists. Checking columns...")
+
+            # ================= CHECK COLUMNS =================
+            cur.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name='vip_members'
+            """)
+            existing_cols = [r[0] for r in cur.fetchall()]
+
+            def add_column(query, col_name):
+                if col_name not in existing_cols:
+                    print(f"⚠️ Adding missing column: {col_name}")
+                    cur.execute(query)
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN order_id TEXT",
+                "order_id"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN join_date TIMESTAMP",
+                "join_date"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN expire_at TIMESTAMP",
+                "expire_at"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN status TEXT DEFAULT 'active'",
+                "status"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN warn1_sent BOOLEAN DEFAULT FALSE",
+                "warn1_sent"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN warn2_sent BOOLEAN DEFAULT FALSE",
+                "warn2_sent"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN payment_date TIMESTAMP DEFAULT NOW()",
+                "payment_date"
+            )
+
+            conn.commit()
+            print("✅ VIP table structure verified.")
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        print("❌ VIP STRUCTURE CHECK FAILED:", e)
+
+
+# Run automatically when app starts
+ensure_vip_table_structure()
+
+
+# =============================
+# ENSURE VIP MEMBERS TABLE
+# =============================
+def ensure_vip_members_table():
+    try:
+        # 1️⃣ Create table if not exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vip_members (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE NOT NULL
+            )
+        """)
+
+        # 2️⃣ Ensure order_id column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='order_id'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN order_id TEXT")
+
+        # 3️⃣ Ensure join_date column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='join_date'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+        # 4️⃣ Ensure expire_at column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='expire_at'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN expire_at TIMESTAMP")
+
+        # 5️⃣ Ensure status column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='status'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN status VARCHAR(20) DEFAULT 'active'")
+
+        print("✅ vip_members table structure verified")
+
+    except Exception as e:
+        print("❌ VIP MEMBERS MIGRATION ERROR:", e)
+
+
+# 🔥 Run at startup
+ensure_vip_members_table()
+# =============================
+# ENSURE VIP MEMBERS TABLE
+# =============================
+def ensure_vip_members_table():
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vip_members (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE NOT NULL
+            )
+        """)
+
+        # Helper function
+        def ensure_column(column_name, column_type):
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name='vip_members'
+                AND column_name=%s
+            """, (column_name,))
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE vip_members ADD COLUMN {column_name} {column_type}")
+
+        # Required columns
+        ensure_column("order_id", "TEXT")
+        ensure_column("join_date", "TIMESTAMP")
+        ensure_column("expire_at", "TIMESTAMP")
+        ensure_column("status", "VARCHAR(20) DEFAULT 'active'")
+        ensure_column("warn1_sent", "BOOLEAN DEFAULT FALSE")
+        ensure_column("warn2_sent", "BOOLEAN DEFAULT FALSE")
+        ensure_column("payment_date", "TIMESTAMP")
+
+        print("✅ vip_members table structure verified")
+
+    except Exception as e:
+        print("❌ VIP MEMBERS MIGRATION ERROR:", e)
+
+# =============================
+# ENSURE ORDERS TABLE STRUCTURE
+# =============================
+def ensure_orders_columns():
+    try:
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='orders'
+              AND column_name='type'
+        """)
+        exists = cur.fetchone()
+
+        if not exists:
+            cur.execute("ALTER TABLE orders ADD COLUMN type VARCHAR(20) DEFAULT 'film'")
+            print("✅ Column 'type' added successfully")
+        else:
+            print("✅ Column 'type' already exists")
+
+    except Exception as e:
+        print("❌ MIGRATION ERROR:", e)
+
+
+# 🔥 Run migration once at startup
+ensure_orders_columns()
+
+
 # ======================
 # GLOBAL STATES
 # ======================
@@ -41,6 +315,7 @@ allfilms_sessions = {}
 cart_sessions = {}
 series_sessions = {}
 user_states = {}
+active_links = {}
 
 # =========================
 # DATABASE TABLES (SAFE)
@@ -85,7 +360,25 @@ CREATE TABLE IF NOT EXISTS orders (
     amount INTEGER,
     paid INTEGER DEFAULT 0,
     pay_ref TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    type VARCHAR(20) DEFAULT 'film'
+)
+""")
+
+
+# -------- VIP MEMBERS --------
+cur.execute("""
+CREATE TABLE IF NOT EXISTS vip_members (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT UNIQUE NOT NULL,
+    order_id TEXT,
+    join_date TIMESTAMP,
+    expire_at TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'active',
+    warn1_sent BOOLEAN DEFAULT FALSE,
+    warn2_sent BOOLEAN DEFAULT FALSE,
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    invite_link TEXT DEFAULT NULL
 )
 """)
 
@@ -337,8 +630,10 @@ import urllib.parse
 import os
 import hmac
 import hashlib
-
+# Store order message temporarily in memory
+ORDER_MESSAGES = {}
 admin_states = {}
+active_links = {}
 # --- Admins configuration ---
 ADMINS = [6210912739, 5009954635] 
 
@@ -351,14 +646,25 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
+VIP_PRICE = 1500
+VIP_DURATION_VALUE = 33
+VIP_DURATION_UNIT = "days"
+
+WARNING_1_VALUE = 30
+WARNING_1_UNIT = "days"
+
+WARNING_2_VALUE = 32
+WARNING_2_UNIT = "days"
+
 ADMIN_ID = 6210912739
 OTP_ADMIN_ID = 6603268127
 
 
-BOT_USERNAME = "Aslamtv2bot"
-CHANNEL = "@Aslammovieschannel"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@Danchirinps"
 
-
+COUNTDOWN_SECONDS = 70
+VIP_LINK = "https://t.me/+k4O-dsySLZBlOTM0"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -372,12 +678,13 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 PAYSTACK_BASE = "https://api.paystack.co"
 
+VIP_GROUP_ID = -1003656360408
 
 
 
 # === PAYMENTS / STORAGE ===
-PAYMENT_NOTIFY_GROUP = -1003553575069
-STORAGE_CHANNEL = -1003478646839
+PAYMENT_NOTIFY_GROUP = -1003769342354
+STORAGE_CHANNEL = -1003794258511
 SEND_ADMIN_PAYMENT_NOTIF = False
 ADMIN_USERNAME = "Aslamtv1"
 
@@ -509,7 +816,6 @@ def send_feedback_prompt(user_id, order_id):
         print("FEEDBACK SEND ERROR:", e)
 
 
-
 @app.route("/webhook", methods=["POST"])
 def flutterwave_webhook():
 
@@ -579,6 +885,189 @@ def flutterwave_webhook():
             cur.close()
             conn.close()
             return "Wrong payment", 200
+
+        # ================= CHECK VIP ORDER =================
+        cur.execute(
+            "SELECT id FROM vip_members WHERE order_id=%s",
+            (order_id,)
+        )
+        vip_row = cur.fetchone()
+
+        if vip_row:
+
+            from datetime import datetime, timedelta
+
+            start_date = datetime.now()
+
+            if VIP_DURATION_UNIT == "minutes":
+                end_date = start_date + timedelta(minutes=VIP_DURATION_VALUE)
+            else:
+                end_date = start_date + timedelta(days=VIP_DURATION_VALUE)
+
+            # ===== CHECK IF USER IN GROUP =====
+            already_in_group = False
+
+            try:
+                member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+
+                if member.status in ["member", "administrator", "creator"]:
+                    already_in_group = True
+
+            except:
+                already_in_group = False
+
+            if already_in_group:
+
+                cur.execute(
+                    """
+                    UPDATE vip_members
+                    SET join_date=%s,
+                        expire_at=%s,
+                        status='active',
+                        warn1_sent=FALSE,
+                        warn2_sent=FALSE,
+                        payment_date=NOW()
+                    WHERE order_id=%s
+                    """,
+                    (start_date, end_date, order_id)
+                )
+
+                # ===== USER RENEWAL MESSAGE =====
+                bot.send_message(
+                    user_id,
+                    f"""Hi 👋
+
+🎉 <b>An sabunta VIP naka cikin nasara.</b>
+
+━━━━━━━━━━━━━━
+📦 <b>Status:</b> VIP Renewed
+🆔 <b>Ref:</b> <code>{order_id}</code>
+━━━━━━━━━━━━━━
+
+🙏Mun gode da cigaba da kasancewa tare da mu 🤍
+""",
+                    parse_mode="HTML"
+                )
+
+                # ===== ADMIN NOTIFY =====
+                try:
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"""🔔 VIP RENEWAL
+
+👤 User ID: {user_id}
+💰 ₦{paid_amount}
+
+Ref: {order_id}
+"""
+                    )
+                except:
+                    pass
+
+            else:
+
+                cur.execute(
+                    """
+                    UPDATE vip_members
+                    SET status='active',
+                        warn1_sent=FALSE,
+                        warn2_sent=FALSE,
+                        payment_date=NOW()
+                    WHERE order_id=%s
+                    """,
+                    (order_id,)
+                )
+
+                conn.commit()
+                cur.close()
+                conn.close()
+
+                vip_kb = InlineKeyboardMarkup()
+                vip_kb.add(
+                    InlineKeyboardButton(
+                        "🔐 JOIN VIP GROUP",
+                        callback_data=f"vipnow:{order_id}"
+                    )
+                )
+
+                bot.send_message(
+                    user_id,
+                    f"""Hi 👋
+
+🎉 <b>An tabbatar da biyan VIP naka.</b>
+
+━━━━━━━━━━━━━━
+📦 <b>Status:</b> Confirmed
+🆔 <b>Ref:</b> <code>{order_id}</code>
+━━━━━━━━━━━━━━
+
+Danna button da ke kasa domin shiga VIP group ɗinmu👇
+""",
+                    parse_mode="HTML",
+                    reply_markup=vip_kb
+                )
+
+                if PAYMENT_NOTIFY_GROUP:
+
+                    bot.send_message(
+                        PAYMENT_NOTIFY_GROUP,
+                        f"""🟢 <b>TRANSACTION COMPLETED</b>
+
+📦 Status: VIP Subscription
+👤 User ID: <code>{user_id}</code>
+
+💳 Total amount: ₦{paid_amount}
+🧾 Ref: <code>{order_id}</code>
+""",
+                        parse_mode="HTML"
+                    )
+
+                return "OK", 200
+
+            # ================= MARK PAID =================
+            cur.execute(
+                "UPDATE orders SET paid=1 WHERE id=%s",
+                (order_id,)
+            )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            # ================= USER MESSAGE =================
+            bot.send_message(
+                user_id,
+                f"""Hi 👋
+
+🎉 <b>An tabbatar da biyan VIP naka.</b>
+
+━━━━━━━━━━━━━━
+📦 <b>Status:</b> Confirmed
+🆔 <b>Ref:</b> <code>{order_id}</code>
+━━━━━━━━━━━━━━
+
+🙏Mun gode da kasancewa tare da mu 🤍
+""",
+                parse_mode="HTML"
+            )
+
+            # ================= ADMIN GROUP =================
+            if PAYMENT_NOTIFY_GROUP:
+
+                bot.send_message(
+                    PAYMENT_NOTIFY_GROUP,
+                    f"""🟢 <b>TRANSACTION COMPLETED</b>
+
+📦 Status: VIP Subscription
+👤 User ID: <code>{user_id}</code>
+
+💳 Total amount: ₦{paid_amount}
+🧾 Ref: <code>{order_id}</code>
+""",
+                    parse_mode="HTML"
+                )
+
+            return "OK", 200
 
         # ================= ITEMS =================
         cur.execute(
@@ -702,8 +1191,6 @@ Item names:
 
     except Exception:
         return "ERROR", 500
-
-
 
 
 @app.route("/telegram", methods=["POST"])
@@ -2336,327 +2823,678 @@ Error:
 
         return
     #karshe
+@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
+def vip_group_info(call):
 
-# ================== FINAL ISOLATED ERASER SYSTEM ==================
+    text = """💎 <b>TSARIN SHIGA VIP GROUP</b>
+━━━━━━━━━━━━━━━━━━
+🔹 <b>Kudin Rijista:</b> ₦1,500  
+🔹 <b>Subscription:</b> Kwana 33  
+🔹 Ba za a sake biyan kudi ba har sai bayan kwanaki 30
+━━━━━━━━━━━━━━━━━━
+🔹 Bayan ka biya, za a tura maka <b>1-Time Secure Link</b>  
+🔹 A cikin VIP ana saka <b>sabbin fina-finan India duk sati</b>
+📅 <b>Ranaku:</b> Lahadi & Laraba
+━━━━━━━━━━━━━━━━━━
+🎬 Kana da damar neman:
+• Sabon fim  
+• Tsohon fim  
+• Fim na musamman  
+Ba tare da sake biyan wani ƙarin kuɗi ba.
+━━━━━━━━━━━━━━━━━━
+🔒 <b>VIP SUBSCRIPTION</b>
+👇👇👇👇👇👇👇
+"""
 
-import os, json, random, time, re
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("💳 SUBSCRIBE NOW", callback_data="subvip")
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        text,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    bot.answer_callback_query(call.id)
+
+
+# ======= VIP ORDER CREATOR (CALLBACK subvip) =========
+import uuid
+from psycopg2.extras import RealDictCursor
+
+@bot.callback_query_handler(func=lambda c: c.data == "subvip")
+def vipgroup_handler(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    first_name = c.from_user.first_name or "User"
+
+    conn = get_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ========= CHECK EXISTING UNPAID VIP =========
+    cur.execute(
+        """
+        SELECT id, amount
+        FROM orders
+        WHERE user_id=%s
+          AND type='vip'
+          AND paid=0
+        LIMIT 1
+        """,
+        (uid,)
+    )
+    row = cur.fetchone()
+
+    # ========= REUSE OR CREATE =========
+    if row:
+        order_id = row["id"]
+
+        if int(row["amount"]) != int(VIP_PRICE):
+            cur.execute(
+                "UPDATE orders SET amount=%s WHERE id=%s",
+                (VIP_PRICE, order_id)
+            )
+            conn.commit()
+    else:
+        order_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO orders (id, user_id, amount, paid, type)
+            VALUES (%s,%s,%s,0,'vip')
+            """,
+            (order_id, uid, VIP_PRICE)
+        )
+        conn.commit()
+
+    # ========= CREATE PAYMENT LINK =========
+    pay_url = create_paystack_payment(
+        uid,
+        order_id,
+        VIP_PRICE,
+        "VIP Subscription"
+    )
+
+    if not pay_url:
+        cur.close()
+        conn.close()
+        return
+
+    # ========= FORMAT =========
+    if VIP_DURATION_UNIT == "minutes":
+        duration_text = f"{VIP_DURATION_VALUE} Minutes"
+    else:
+        duration_text = f"{VIP_DURATION_VALUE} Days"
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+    # ✅ EDIT MESSAGE INSTEAD OF SEND
+    bot.edit_message_text(
+        f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
+
+{first_name}, you are almost in our VIP group.
+
+💎 VIP Algaita Bot(Group)
+💵 ₦{VIP_PRICE} only
+⏳ {duration_text} access
+
+⚡ Access starts after payment
+🔐 Secure payment
+
+Tap below to continue👇.
+""",
+        chat_id=c.message.chat.id,
+        message_id=c.message.message_id,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    # ✅ STORE MESSAGE IN MEMORY
+    ORDER_MESSAGES[order_id] = (
+        c.message.chat.id,
+        c.message.message_id
+    )
+
+    cur.close()
+    conn.close()
+
+import threading  
+import time  
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton  
+  
+  
+@bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))  
+def handle_vip_join(c):  
+  
+    try:  
+        bot.answer_callback_query(c.id)  
+  
+        user_id = c.from_user.id  
+        first_name = c.from_user.first_name or "User"  
+  
+        sent_chat_id = c.message.chat.id  
+        sent_message_id = c.message.message_id  
+  
+        # ===== JOIN BUTTON =====  
+        kb = InlineKeyboardMarkup()  
+        kb.add(  
+            InlineKeyboardButton(  
+                "🔐 Join VIP Now",  
+                url=VIP_LINK  
+            )  
+        )  
+  
+        bot.edit_message_text(  
+            f"🔐 <b>VIP ACCESS READY</b>\n\n"  
+            f"⏳ Link expires in {COUNTDOWN_SECONDS} seconds...\n\n"  
+            f"Tap below to join 👇",  
+            chat_id=sent_chat_id,  
+            message_id=sent_message_id,  
+            parse_mode="HTML",  
+            reply_markup=kb  
+        )  
+  
+        # ===== COUNTDOWN =====  
+        def countdown():  
+  
+            for remaining in range(COUNTDOWN_SECONDS - 1, -1, -1):  
+  
+                time.sleep(1)  
+  
+                # ===== CHECK DIRECT FROM GROUP =====  
+                try:  
+                    member = bot.get_chat_member(VIP_GROUP_ID, user_id)  
+  
+                    if member.status in ["member", "administrator", "creator"]:  
+  
+                        # ================= DB UPDATE ACTIVE =================  
+                        try:  
+                            from datetime import datetime, timedelta  
+  
+                            conn = get_conn()  
+                            cur = conn.cursor()  
+  
+                            # ✅ JOIN DATE = lokacin da ya shiga  
+                            join_date = datetime.now()  
+  
+                            # ✅ EXPIRE = lissafi daga saman file  
+                            if VIP_DURATION_UNIT == "minutes":  
+                                expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)  
+                            else:  
+                                expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)  
+  
+                            # ===== CHECK IF USER EXISTS =====
+                            cur.execute(
+                                "SELECT 1 FROM vip_members WHERE user_id=%s",
+                                (user_id,)
+                            )
+                            exists = cur.fetchone()
+
+                            if exists:
+                                cur.execute(  
+                                    """  
+                                    UPDATE vip_members  
+                                    SET status='active',  
+                                        join_date=%s,  
+                                        expire_at=%s,  
+                                        warn1_sent=FALSE,  
+                                        warn2_sent=FALSE  
+                                    WHERE user_id=%s  
+                                    """,  
+                                    (join_date, expire_at, user_id)  
+                                )  
+                            else:
+                                cur.execute(
+                                    """
+                                    INSERT INTO vip_members
+                                    (user_id, status, join_date, expire_at, warn1_sent, warn2_sent)
+                                    VALUES (%s, 'active', %s, %s, FALSE, FALSE)
+                                    """,
+                                    (user_id, join_date, expire_at)
+                                )
+
+                            conn.commit()  
+                            cur.close()  
+                            conn.close()  
+  
+                        except:  
+                            pass  
+                        # =====================================================  
+  
+                        # EDIT MESSAGE TO USER JOINED  
+                        try:  
+                            bot.edit_message_text(  
+                                f"{first_name} Joined ✅",  
+                                chat_id=sent_chat_id,  
+                                message_id=sent_message_id  
+                            )  
+                        except:  
+                            pass  
+  
+                        # SEND THANK YOU PRIVATE MESSAGE  
+                        try:  
+                            bot.send_message(  
+                                user_id,  
+                                "🙏 Thank you our valued customer.\n"  
+                                "Fatanmu zakaji dadin wannan group."  
+                            )  
+                        except:  
+                            pass  
+  
+                        return  
+                except:  
+                    pass  
+  
+                # ===== UPDATE COUNTDOWN =====  
+                try:  
+                    bot.edit_message_text(  
+                        f"🔐 <b>VIP ACCESS READY</b>\n\n"  
+                        f"⏳ Link expires in {remaining} seconds...\n\n"  
+                        f"Tap below to join 👇",  
+                        chat_id=sent_chat_id,  
+                        message_id=sent_message_id,  
+                        parse_mode="HTML",  
+                        reply_markup=kb  
+                    )  
+                except:  
+                    pass  
+  
+            # ===== TIME OUT =====  
+            admin_kb = InlineKeyboardMarkup()  
+            admin_kb.add(  
+                InlineKeyboardButton(  
+                    "👤ADMIN HELP",  
+                    url=f"https://t.me/{ADMIN_USERNAME}"  
+                )  
+            )  
+  
+            try:  
+                bot.edit_message_text(  
+                    "❌ TIME OUT\n\n"  
+                    "This link has expired.",  
+                    chat_id=sent_chat_id,  
+                    message_id=sent_message_id,  
+                    reply_markup=admin_kb  
+                )  
+            except:  
+                pass  
+  
+            try:  
+                time.sleep(2)  
+                bot.send_message(  
+                    user_id,  
+                    "An turama maka link amma link din har yayi expire\n"  
+                    "baka shiga ba don haka tintini admin."  
+                )  
+            except:  
+                pass  
+  
+        threading.Thread(target=countdown).start()  
+  
+    except:  
+        pass  
+  
+import threading  
+import time  
+from datetime import datetime  
+  
+def vip_expiry_checker():  
+  
+    while True:  
+        try:  
+            conn = get_conn()  
+            cur = conn.cursor()  
+  
+            cur.execute(  
+                """  
+                SELECT user_id  
+                FROM vip_members  
+                WHERE status='active'  
+                AND expire_at IS NOT NULL  
+                AND expire_at <= NOW()  
+                """  
+            )  
+  
+            expired_users = cur.fetchall()  
+  
+            for row in expired_users:  
+                user_id = row[0]  
+  
+                # ===== REMOVE FROM GROUP (NOT PERMANENT BAN) =====  
+                try:  
+                    bot.ban_chat_member(VIP_GROUP_ID, user_id)  
+                    bot.unban_chat_member(VIP_GROUP_ID, user_id)  
+                except:  
+                    pass  
+  
+                # ===== UPDATE STATUS =====  
+                try:  
+                    cur.execute(  
+                        """  
+                        UPDATE vip_members  
+                        SET status='expired'  
+                        WHERE user_id=%s  
+                        """,  
+                        (user_id,)  
+                    )  
+                    conn.commit()  
+  
+                    # ===== WARNING 3 CALL =====  
+                    send_expired_message(user_id)  
+  
+                except:  
+                    pass  
+  
+            cur.close()  
+            conn.close()  
+  
+        except:  
+            pass  
+  
+        time.sleep(60)  # check every 60 seconds  
+  
+  
+threading.Thread(target=vip_expiry_checker, daemon=True).start()
+
+# ==========================================
+# VIP WARNING SYSTEM (HAUSA VERSION)
+# ==========================================
+
+import threading
+import time
 from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-ERASER_BACKUP_FOLDER = "eraser_backups"
-ERASER_PASSWORD_DEFAULT = "E66337"
-ERASER_OTP_TTL = 120
-ERASER_MAX_RESEND = 3
-ERASER_RESEND_COOLDOWN = 30
-ERASER_BACKUP_TTL_DAYS = 30
 
-os.makedirs(ERASER_BACKUP_FOLDER, exist_ok=True)
+def vip_warning_system():
 
-# ================= DATABASE (POSTGRES) =================
-try:
-    conn = get_conn()
-    cur = conn.cursor()
+    while True:
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS eraser_settings(
-            key TEXT PRIMARY KEY,
-            value TEXT
+            now = datetime.now()
+
+            # ===============================
+            # GET ALL ACTIVE USERS
+            # ===============================
+            cur.execute("""
+                SELECT user_id, expire_at, warn1_sent, warn2_sent
+                FROM vip_members
+                WHERE status='active'
+                AND expire_at IS NOT NULL
+            """)
+
+            users = cur.fetchall()
+
+            for user_id, expire_at, warn1_sent, warn2_sent in users:
+
+                if not expire_at:
+                    continue
+
+                remaining = expire_at - now
+                remaining_seconds = remaining.total_seconds()
+
+                if remaining_seconds <= 0:
+                    continue
+
+                # =================================
+                # CONVERT WARNING 1 THRESHOLD
+                # =================================
+                if WARNING_1_UNIT == "minutes":
+                    threshold1 = timedelta(minutes=WARNING_1_VALUE)
+                    time_left_value = int(remaining_seconds // 60)
+                    unit_text = "minti"
+                else:
+                    threshold1 = timedelta(days=WARNING_1_VALUE)
+                    time_left_value = remaining.days
+                    unit_text = "kwana"
+
+                # =================================
+                # WARNING 1
+                # =================================
+                if not warn1_sent and remaining <= threshold1:
+
+                    try:
+                        kb = InlineKeyboardMarkup()
+                        kb.add(
+                            InlineKeyboardButton(
+                                "💳REPAY NOW",
+                                callback_data="subvip"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"⏳ TUNATARWA ZANYI MAKA\n\n"
+                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value} {unit_text}.\n\n"
+                            f"Muna matuƙar godiya da kasancewarka tare da mu ❤️\n"
+                            f"Da fatan za ka sabunta kafin lokacin ya ƙare domin cigaba da more VIP group.",
+                            reply_markup=kb
+                        )
+
+                        cur.execute("""
+                            UPDATE vip_members
+                            SET warn1_sent=TRUE
+                            WHERE user_id=%s
+                        """, (user_id,))
+                        conn.commit()
+
+                    except:
+                        pass
+
+                # =================================
+                # CONVERT WARNING 2 THRESHOLD
+                # =================================
+                if WARNING_2_UNIT == "minutes":
+                    threshold2 = timedelta(minutes=WARNING_2_VALUE)
+                    time_left_value2 = int(remaining_seconds // 60)
+                    unit_text2 = "minti"
+                else:
+                    threshold2 = timedelta(days=WARNING_2_VALUE)
+                    time_left_value2 = remaining.days
+                    unit_text2 = "kwana"
+
+                # =================================
+                # WARNING 2 (FINAL)
+                # =================================
+                if not warn2_sent and remaining <= threshold2:
+
+                    try:
+                        kb = InlineKeyboardMarkup()
+                        kb.add(
+                            InlineKeyboardButton(
+                                "💳REPAY NOW",
+                                callback_data="subvip"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"⚠NAZO NA SANAR DAKAI\n\n"
+                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value2} {unit_text2}.\n\n"
+                            f"Idan ba ka sabunta ba kafin lokacin ya cika, za a cire ka daga VIP group.\n"
+                            f"Da fatan za ka sabunta yanzu domin kada a cire ka.",
+                            reply_markup=kb
+                        )
+
+                        cur.execute("""
+                            UPDATE vip_members
+                            SET warn2_sent=TRUE
+                            WHERE user_id=%s
+                        """, (user_id,))
+                        conn.commit()
+
+                    except:
+                        pass
+
+            cur.close()
+            conn.close()
+
+        except:
+            pass
+
+        time.sleep(30)  # yana duba duk 30 seconds
+
+
+threading.Thread(target=vip_warning_system, daemon=True).start()
+
+
+
+# ==========================================
+# WARNING 3 (AFTER USER REMOVAL MESSAGE)
+# SAKA WANNAN A CIKIN EXPIRY CHECKER
+# BAYAN AN CANZA status='expired'
+# ==========================================
+
+def send_expired_message(user_id):
+    try:
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "💳REPAY NOW",
+                callback_data="subvip"
+            )
         )
-    """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS eraser_backups(
-            id SERIAL PRIMARY KEY,
-            filename TEXT,
-            created_at TIMESTAMP
+        bot.send_message(
+            user_id,
+            "❌ An Cire Ka Daga VIP\n\n"
+            "An cire ka daga VIP group saboda subscription ɗinka ya ƙare.\n\n"
+            "Idan kana son komawa domin cigaba da more manyan fina-finai sababbi da tsofaffi,\n"
+            "za ka iya sabunta biyanka yanzu.",
+            reply_markup=kb
         )
-    """)
-
-    conn.commit()
-    cur.close()
-    conn.close()
-except Exception as e:
-    print("ERASER DB INIT ERROR:", e)
-
-# ================= HELPERS =================
-def eraser_reset_kb():
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🔑 Reset Password", callback_data="eraser_forgot"))
-    kb.add(InlineKeyboardButton("✖ Cancel", callback_data="eraser_cancel"))
-    return kb
-
-# ================= PASSWORD =================
-def _eraser_get_password():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        "SELECT value FROM eraser_settings WHERE key=%s",
-        ("eraser_password",)
-    )
-    r = cur.fetchone()
-
-    if r and r[0]:
-        cur.close()
-        conn.close()
-        return r[0]
-
-    cur.execute(
-        """
-        INSERT INTO eraser_settings(key,value)
-        VALUES(%s,%s)
-        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
-        """,
-        ("eraser_password", ERASER_PASSWORD_DEFAULT)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-    return ERASER_PASSWORD_DEFAULT
+    except:
+        pass
 
 
-def _eraser_set_password(p):
-    conn = get_conn()
-    cur = conn.cursor()
 
-    cur.execute(
-        """
-        INSERT INTO eraser_settings(key,value)
-        VALUES(%s,%s)
-        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
-        """,
-        ("eraser_password", p)
-    )
+# ==========================================
+# ADMIN MANUAL VIP ADD SYSTEM (/vip)
+# ==========================================
 
-    conn.commit()
-    cur.close()
-    conn.close()
+from datetime import datetime, timedelta
+
+vip_waiting_admin = set()
 
 
-def _eraser_password_valid(p):
-    return bool(re.fullmatch(r"\d{5}[A-Z]", p))
+# ===============================
+# /vip COMMAND (ADMIN ONLY)
+# ===============================
+@bot.message_handler(commands=['vip'])
+def vip_command(message):
 
-# ================= OTP =================
-_eraser_otp = {}
-_eraser_meta = {}
-
-def _eraser_gen_otp():
-    return str(random.randint(100000, 999999))
-
-
-def _eraser_send_otp(uid, resend=False):
-    now = time.time()
-    meta = _eraser_meta.get(uid, {})
-
-    if resend:
-        if meta.get("resends", 0) >= ERASER_MAX_RESEND:
-            return False, "OTP resend limit reached."
-        if now - meta.get("last", 0) < ERASER_RESEND_COOLDOWN:
-            return False, "Wait before resending OTP."
-
-    otp = _eraser_gen_otp()
-    _eraser_otp[uid] = {"otp": otp, "expires": now + ERASER_OTP_TTL}
-    _eraser_meta[uid] = {
-        "resends": meta.get("resends", 0) + (1 if resend else 0),
-        "last": now
-    }
-
-    bot.send_message(OTP_ADMIN_ID, f"🔐 ERASER OTP for admin {uid}: {otp}")
-    return True, None
-
-
-def _eraser_otp_expired(uid):
-    return uid not in _eraser_otp or time.time() > _eraser_otp[uid]["expires"]
-
-# ================= BACKUP =================
-def _eraser_create_backup():
-    now = datetime.utcnow()
-    ts = now.strftime("%Y%m%d%H%M%S")
-    fname = f"eraser_backup_{ts}.json"
-    path = os.path.join(ERASER_BACKUP_FOLDER, fname)
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT tablename
-        FROM pg_tables
-        WHERE schemaname='public'
-        """
-    )
-    tables = [r[0] for r in cur.fetchall()]
-
-    data = {}
-
-    for t in tables:
-        if t in ("eraser_settings", "eraser_backups"):
-            continue
-
-        cur.execute(f'SELECT * FROM "{t}"')
-        rows = cur.fetchall()
-        cols = [desc[0] for desc in cur.description] if rows else []
-        data[t] = [dict(zip(cols, r)) for r in rows]
-
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
-
-    cur.execute(
-        """
-        INSERT INTO eraser_backups(filename,created_at)
-        VALUES(%s,%s)
-        """,
-        (fname, now)
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    return path
-
-# ================= CALLBACK =================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("eraser_"))
-def eraser_cb(c):
-    uid = c.from_user.id
-    data = c.data
-    bot.answer_callback_query(c.id)
-
-    if uid != ADMIN_ID:
+    if message.from_user.id != ADMIN_ID:
         return
 
-    if data == "eraser_menu":
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("✔ Yes – Erase", callback_data="eraser_yes"))
-        kb.add(InlineKeyboardButton("📦 BACKUP", callback_data="eraser_backup"))
-        kb.add(InlineKeyboardButton("♻ RESTORE DATA", callback_data="eraser_restore"))
-        kb.add(InlineKeyboardButton("🔑 FORGET PASSWORD", callback_data="eraser_forgot"))
-        kb.add(InlineKeyboardButton("✖ Cancel", callback_data="eraser_cancel"))
-        bot.send_message(uid, "🧹 ERASER SYSTEM", reply_markup=kb)
+    vip_waiting_admin.add(message.from_user.id)
 
-    elif data == "eraser_cancel":
-        admin_states.pop(uid, None)
-        bot.send_message(uid, "Cancelled.", reply_markup=reply_menu(uid))
+    bot.send_message(
+        message.chat.id,
+        "Turo min user ID ɗin wanda kake son saka a VIP."
+    )
 
-    elif data == "eraser_backup":
-        admin_states[uid] = {"state": "eraser_backup_pass"}
-        bot.send_message(uid, "Enter ERASER password:")
 
-    elif data == "eraser_yes":
-        admin_states[uid] = {"state": "eraser_erase_pass"}
-        bot.send_message(uid, "Enter ERASER password:")
+# ===============================
+# RECEIVE USER ID
+# ===============================
+@bot.message_handler(func=lambda m: m.from_user.id in vip_waiting_admin)
+def receive_vip_user_id(message):
 
-    elif data == "eraser_restore":
-        admin_states[uid] = {"state": "eraser_restore_pass"}
-        bot.send_message(uid, "Enter ERASER password:")
+    if message.from_user.id != ADMIN_ID:
+        return
 
-    elif data == "eraser_forgot":
-        _eraser_send_otp(uid)
-        admin_states[uid] = {"state": "eraser_wait_otp"}
-        bot.send_message(uid, "OTP sent. Enter OTP:")
+    try:
+        user_id = int(message.text.strip())
+    except:
+        bot.send_message(message.chat.id, "ID bai inganta ba. Tura lambar user ID kawai.")
+        return
 
-# ================= TEXT =================
-@bot.message_handler(
-    func=lambda m: m.from_user.id == ADMIN_ID
-    and admin_states.get(m.from_user.id, {}).get("state", "").startswith("eraser_")
-)
-def eraser_text(m):
-    uid = m.from_user.id
-    text = m.text.strip()
-    st = admin_states[uid]["state"]
+    vip_waiting_admin.remove(message.from_user.id)
 
-    # ---- BACKUP PASS ----
-    if st == "eraser_backup_pass":
-        if text != _eraser_get_password():
-            bot.send_message(uid, "❌ Wrong password.", reply_markup=eraser_reset_kb())
+    # ===============================
+    # CHECK IF USER IS IN GROUP
+    # ===============================
+    try:
+        member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+
+        if member.status not in ["member", "administrator", "creator"]:
+            bot.send_message(
+                message.chat.id,
+                "Wannan user baya cikin group ɗin."
+            )
             return
 
-        path = _eraser_create_backup()
-        admin_states.pop(uid)
-        bot.send_message(uid, f"✔ Backup created:\n{path}")
+    except:
+        bot.send_message(
+            message.chat.id,
+            "Wannan user baya cikin group ɗin."
+        )
+        return
 
-    # ---- ERASE PASS ----
-    elif st == "eraser_erase_pass":
-        if text != _eraser_get_password():
-            bot.send_message(uid, "❌ Wrong password.", reply_markup=eraser_reset_kb())
-            return
+    # ===============================
+    # CREATE JOIN + EXPIRE DATE
+    # ===============================
+    join_date = datetime.now()
 
-        _eraser_create_backup()
+    if VIP_DURATION_UNIT == "minutes":
+        expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)
+    else:
+        expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)
 
+    # ===============================
+    # INSERT OR UPDATE USER
+    # ===============================
+    try:
         conn = get_conn()
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT tablename
-            FROM pg_tables
-            WHERE schemaname='public'
-        """)
-        tables = [r[0] for r in cur.fetchall()]
-
-        for t in tables:
-            if t not in ("eraser_settings", "eraser_backups"):
-                try:
-                    cur.execute(f'TRUNCATE TABLE "{t}" RESTART IDENTITY CASCADE')
-                except Exception:
-                    pass
+            INSERT INTO vip_members (user_id, join_date, expire_at, status, warn1_sent, warn2_sent)
+            VALUES (%s, %s, %s, 'active', FALSE, FALSE)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                join_date = EXCLUDED.join_date,
+                expire_at = EXCLUDED.expire_at,
+                status = 'active',
+                warn1_sent = FALSE,
+                warn2_sent = FALSE
+        """, (user_id, join_date, expire_at))
 
         conn.commit()
         cur.close()
         conn.close()
 
-        admin_states.pop(uid)
-        bot.send_message(uid, "🧹 ERASE COMPLETE.")
+    except:
+        bot.send_message(message.chat.id, "An samu matsala wajen saka user a DB.")
+        return
 
-    # ---- RESTORE PASS ----
-    elif st == "eraser_restore_pass":
-        if text != _eraser_get_password():
-            bot.send_message(uid, "❌ Wrong password.", reply_markup=eraser_reset_kb())
-            return
+    # ===============================
+    # SUCCESS MESSAGE TO ADMIN
+    # ===============================
+    
+    # ✅ DISPLAY FIX (Nigeria Time +1 hour)
+    expire_local = expire_at + timedelta(hours=1)
+    expire_text = expire_local.strftime("%d %B %Y %H:%M:%S")
 
-        ok, info = _eraser_auto_restore_latest()
-        admin_states.pop(uid, None)
+    bot.send_message(
+        message.chat.id,
+        f"An saka user {user_id} a VIP.\n\n"
+        f"Za a cire shi ranar:\n{expire_text}"
+    )
 
-        if ok:
-            bot.send_message(
-                uid,
-                f"♻ <b>RESTORE COMPLETE</b>\n\n📦 Backup: <code>{info}</code>",
-                parse_mode="HTML"
-            )
-        else:
-            bot.send_message(
-                uid,
-                f"❌ <b>Restore failed</b>\n\n{info}",
-                parse_mode="HTML"
-            )
 
-    # ---- OTP ----
-    elif st == "eraser_wait_otp":
-        if _eraser_otp_expired(uid):
-            bot.send_message(uid, "OTP expired.")
-            return
 
-        if text != _eraser_otp[uid]["otp"]:
-            bot.send_message(uid, "❌ OTP ba daidai ba. Tambayi admin mai karɓa.")
-            return
-
-        admin_states[uid] = {"state": "eraser_new_pass"}
-        bot.send_message(uid, "Enter new password:")
-
-    elif st == "eraser_new_pass":
-        if not _eraser_password_valid(text):
-            bot.send_message(uid, "Invalid format. Example: 66788K")
-            return
-
-        admin_states[uid] = {"state": "eraser_confirm_pass", "tmp": text}
-        bot.send_message(uid, "Confirm password:")
-
-    elif st == "eraser_confirm_pass":
-        if text != admin_states[uid]["tmp"]:
-            bot.send_message(uid, "Passwords do not match.")
-            return
-
-        _eraser_set_password(text)
-        admin_states.pop(uid)
-        bot.send_message(uid, "✅ Password changed successfully.")
 
 
 # ================= AUTO MERGE RESTORE (ADD-ON ONLY) =================
@@ -3025,6 +3863,27 @@ def admin_feature_enabled():
 
     return row and row[0] == 1
 
+# ======================================================
+@bot.message_handler(content_types=['new_chat_members'])
+def get_group_id(message):
+
+    try:
+        chat_id = message.chat.id
+        chat_title = message.chat.title or "Unknown"
+
+        bot.send_message(
+            ADMIN_ID,
+            f"""✅ GROUP DETECTED
+
+📛 Name: {chat_title}
+🆔 ID:
+<code>{chat_id}</code>
+""",
+            parse_mode="HTML"
+        )
+
+    except:
+        pass
 
 # ================= GETID (FILE_NAME SEARCH) =================
 @bot.message_handler(commands=["getid"])
