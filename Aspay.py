@@ -393,8 +393,9 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ========= BOT =========
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
+# ========= FLASK =========
 app = Flask(__name__)
-# ========= FLASK
+
 
 import time
 
@@ -1527,7 +1528,7 @@ def _callback_view_all(call):
     uid = call.from_user.id
     # Build a small message-like object expected by send_weekly_list
     class _Msg:
-        def init(self, uid):
+        def __init__(self, uid):
             self.chat = type('X', (), {'id': uid})
             self.text = ""
     try:
@@ -3344,7 +3345,7 @@ def _callback_view_all(call):
     uid = call.from_user.id
     # Build a small message-like object expected by send_weekly_list
     class _Msg:
-        def init(self, uid):
+        def __init__(self, uid):
             self.chat = type('X', (), {'id': uid})
             self.text = ""
     try:
@@ -7240,9 +7241,8 @@ def sales_report_scheduler():
 
 
 # ▶️ START BACKGROUND REPORT THREAD
-
 # ================== START SERVER ==================
-if name == "__main__":
+if __name__ == "__main__":
 
     if BOT_MODE == "webhook":
         print("🌐 Running in WEBHOOK mode")
