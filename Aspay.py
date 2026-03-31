@@ -1,4 +1,6 @@
+
 ## bot.py  (PostgreSQL SAFE – FULL FIX, nothing removed)
+
 
 import telebot
 from telebot import types
@@ -13,7 +15,7 @@ import os
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
-
+    
 def get_conn():
     try:
         c = psycopg2.connect(
@@ -30,6 +32,309 @@ conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
 
+
+# =========================================
+# ======================
+# WALLET DATABASE CONNECTION
+# ======================
+WALLET_DATABASE_URL = os.environ.get("WALLET_DATABASE_URL")
+
+if not WALLET_DATABASE_URL:
+    raise RuntimeError("WALLET_DATABASE_URL is not set")
+
+def get_wallet_conn():
+    try:
+        c = psycopg2.connect(
+            WALLET_DATABASE_URL,
+            connect_timeout=5,
+            sslmode="require"
+        )
+        c.autocommit = True
+        return c
+    except Exception as e:
+        print("❌ WALLET DB CONNECT ERROR:", e)
+        return None
+
+# ===== GLOBAL CONNECTION (FOR TABLE CREATION) =====
+wallet_conn = psycopg2.connect(WALLET_DATABASE_URL)
+wallet_conn.autocommit = True
+wallet_cur = wallet_conn.cursor()
+
+
+# AUTO DB FIX: ENSURE invite_link COLUMN
+# ==========================================
+# AUTO DB FIX: ENSURE invite_link COLUMN
+# ==========================================
+def ensure_vip_invite_column():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # Check if column exists
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='invite_link'
+        """)
+        exists = cur.fetchone()
+
+        if not exists:
+            cur.execute("""
+                ALTER TABLE vip_members
+                ADD COLUMN invite_link TEXT DEFAULT NULL
+            """)
+            conn.commit()
+
+            try:
+                bot.send_message(ADMIN_ID, "✅ invite_link column created successfully.")
+            except:
+                pass
+        else:
+            try:
+                bot.send_message(ADMIN_ID, "ℹ invite_link column already exists.")
+            except:
+                pass
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        try:
+            bot.send_message(ADMIN_ID, f"❌ DB AUTO FIX ERROR:\n{e}")
+        except:
+            pass
+
+
+# Run immediately on startup
+ensure_vip_invite_column()
+
+
+# ============================================
+# VIP TABLE AUTO STRUCTURE FIX (RUN ON START)
+# ============================================
+
+def ensure_vip_table_structure():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        print("🔍 Checking VIP table structure...")
+
+        # ================= CHECK TABLE =================
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'vip_members'
+            )
+        """)
+        table_exists = cur.fetchone()[0]
+
+        if not table_exists:
+            print("⚠️ vip_members table not found. Creating it...")
+
+            cur.execute("""
+                CREATE TABLE vip_members (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT UNIQUE NOT NULL,
+                    order_id TEXT,
+                    join_date TIMESTAMP,
+                    expire_at TIMESTAMP,
+                    status TEXT DEFAULT 'active',
+                    warn1_sent BOOLEAN DEFAULT FALSE,
+                    warn2_sent BOOLEAN DEFAULT FALSE,
+                    payment_date TIMESTAMP DEFAULT NOW()
+                )
+            """)
+
+            conn.commit()
+            print("✅ vip_members table created.")
+
+        else:
+            print("✅ vip_members table exists. Checking columns...")
+
+            # ================= CHECK COLUMNS =================
+            cur.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name='vip_members'
+            """)
+            existing_cols = [r[0] for r in cur.fetchall()]
+
+            def add_column(query, col_name):
+                if col_name not in existing_cols:
+                    print(f"⚠️ Adding missing column: {col_name}")
+                    cur.execute(query)
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN order_id TEXT",
+                "order_id"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN join_date TIMESTAMP",
+                "join_date"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN expire_at TIMESTAMP",
+                "expire_at"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN status TEXT DEFAULT 'active'",
+                "status"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN warn1_sent BOOLEAN DEFAULT FALSE",
+                "warn1_sent"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN warn2_sent BOOLEAN DEFAULT FALSE",
+                "warn2_sent"
+            )
+
+            add_column(
+                "ALTER TABLE vip_members ADD COLUMN payment_date TIMESTAMP DEFAULT NOW()",
+                "payment_date"
+            )
+
+            conn.commit()
+            print("✅ VIP table structure verified.")
+
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        print("❌ VIP STRUCTURE CHECK FAILED:", e)
+
+
+# Run automatically when app starts
+ensure_vip_table_structure()
+
+
+# =============================
+# ENSURE VIP MEMBERS TABLE
+# =============================
+def ensure_vip_members_table():
+    try:
+        # 1️⃣ Create table if not exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vip_members (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE NOT NULL
+            )
+        """)
+
+        # 2️⃣ Ensure order_id column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='order_id'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN order_id TEXT")
+
+        # 3️⃣ Ensure join_date column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='join_date'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+        # 4️⃣ Ensure expire_at column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='expire_at'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN expire_at TIMESTAMP")
+
+        # 5️⃣ Ensure status column
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name='vip_members'
+            AND column_name='status'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE vip_members ADD COLUMN status VARCHAR(20) DEFAULT 'active'")
+
+        print("✅ vip_members table structure verified")
+
+    except Exception as e:
+        print("❌ VIP MEMBERS MIGRATION ERROR:", e)
+
+
+# 🔥 Run at startup
+ensure_vip_members_table()
+# =============================
+# ENSURE VIP MEMBERS TABLE
+# =============================
+def ensure_vip_members_table():
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vip_members (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE NOT NULL
+            )
+        """)
+
+        # Helper function
+        def ensure_column(column_name, column_type):
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name='vip_members'
+                AND column_name=%s
+            """, (column_name,))
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE vip_members ADD COLUMN {column_name} {column_type}")
+
+        # Required columns
+        ensure_column("order_id", "TEXT")
+        ensure_column("join_date", "TIMESTAMP")
+        ensure_column("expire_at", "TIMESTAMP")
+        ensure_column("status", "VARCHAR(20) DEFAULT 'active'")
+        ensure_column("warn1_sent", "BOOLEAN DEFAULT FALSE")
+        ensure_column("warn2_sent", "BOOLEAN DEFAULT FALSE")
+        ensure_column("payment_date", "TIMESTAMP")
+
+        print("✅ vip_members table structure verified")
+
+    except Exception as e:
+        print("❌ VIP MEMBERS MIGRATION ERROR:", e)
+
+# =============================
+# ENSURE ORDERS TABLE STRUCTURE
+# =============================
+def ensure_orders_columns():
+    try:
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='orders'
+              AND column_name='type'
+        """)
+        exists = cur.fetchone()
+
+        if not exists:
+            cur.execute("ALTER TABLE orders ADD COLUMN type VARCHAR(20) DEFAULT 'film'")
+            print("✅ Column 'type' added successfully")
+        else:
+            print("✅ Column 'type' already exists")
+
+    except Exception as e:
+        print("❌ MIGRATION ERROR:", e)
+
+
+# 🔥 Run migration once at startup
+ensure_orders_columns()
+
+
 # ======================
 # GLOBAL STATES
 # ======================
@@ -41,6 +346,85 @@ allfilms_sessions = {}
 cart_sessions = {}
 series_sessions = {}
 user_states = {}
+active_links = {}
+
+# =========================
+# WALLET DATABASE TABLES
+# =========================
+
+# -------- WALLET BALANCE --------
+wallet_cur.execute("""
+CREATE TABLE IF NOT EXISTS wallet_balance (
+    user_id BIGINT PRIMARY KEY,
+    balance BIGINT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+# -------- WALLET TRANSACTIONS --------
+wallet_cur.execute("""
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    amount BIGINT NOT NULL,
+    type VARCHAR(30) NOT NULL,
+    reference TEXT,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
+# index domin saurin transaction history
+wallet_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_wallet_transactions_user
+ON wallet_transactions(user_id)
+""")
+
+# -------- WALLET DEPOSITS (PAYSTACK) --------
+wallet_cur.execute("""
+CREATE TABLE IF NOT EXISTS wallet_deposits (
+    id TEXT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    amount BIGINT NOT NULL,
+    type VARCHAR(30) DEFAULT 'wallet',
+    paystack_ref TEXT UNIQUE,
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    paid_at TIMESTAMP
+)
+""")
+
+# index domin saurin lookup
+wallet_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_wallet_deposits_user
+ON wallet_deposits(user_id)
+""")
+
+# -------- WALLET WITHDRAWALS (ADMIN USE) --------
+wallet_cur.execute("""
+CREATE TABLE IF NOT EXISTS wallet_withdrawals (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    amount BIGINT,
+    status VARCHAR(20) DEFAULT 'pending',
+    processed_by BIGINT,
+    reference TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP
+)
+""")
+
+# index domin saurin admin queries
+wallet_cur.execute("""
+CREATE INDEX IF NOT EXISTS idx_wallet_withdrawals_user
+ON wallet_withdrawals(user_id)
+""")
+
+#===============
+# END DB MyWallet
+#===============
+
 
 # =========================
 # DATABASE TABLES (SAFE)
@@ -85,7 +469,25 @@ CREATE TABLE IF NOT EXISTS orders (
     amount INTEGER,
     paid INTEGER DEFAULT 0,
     pay_ref TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    type VARCHAR(20) DEFAULT 'film'
+)
+""")
+
+
+# -------- VIP MEMBERS --------
+cur.execute("""
+CREATE TABLE IF NOT EXISTS vip_members (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT UNIQUE NOT NULL,
+    order_id TEXT,
+    join_date TIMESTAMP,
+    expire_at TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'active',
+    warn1_sent BOOLEAN DEFAULT FALSE,
+    warn2_sent BOOLEAN DEFAULT FALSE,
+    payment_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    invite_link TEXT DEFAULT NULL
 )
 """)
 
@@ -337,8 +739,10 @@ import urllib.parse
 import os
 import hmac
 import hashlib
-
+# Store order message temporarily in memory
+ORDER_MESSAGES = {}
 admin_states = {}
+active_links = {}
 # --- Admins configuration ---
 ADMINS = [6210912739, 5009954635] 
 
@@ -351,6 +755,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling")
 
+CASHBACK_PERCENT = 0.20
+CASHBACK_LIMIT = 200
+
+CASHBACK = 20
+
+VIP_PRICE = 1500
+VIP_DURATION_VALUE = 33
+VIP_DURATION_UNIT = "days"
+
+WARNING_1_VALUE = 30
+WARNING_1_UNIT = "days"
+
+WARNING_2_VALUE = 32
+WARNING_2_UNIT = "days"
+
 ADMIN_ID = 6210912739
 OTP_ADMIN_ID = 6603268127
 
@@ -358,7 +777,8 @@ OTP_ADMIN_ID = 6603268127
 BOT_USERNAME = "Aslamtv2bot"
 CHANNEL = "@Aslammovieschannel"
 
-
+COUNTDOWN_SECONDS = 70
+VIP_LINK = "https://t.me/+nLQP1kVfgtNiNzM0"  # saka permanent group link naka
 # ========= DATABASE CONFIG =========
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -372,8 +792,9 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 PAYSTACK_BASE = "https://api.paystack.co"
 
+VIP_GROUP_ID = -1002780322450
 
-
+PAYMENT_NOTIFY_GROUP_WALLET = -1003733762941
 
 # === PAYMENTS / STORAGE ===
 PAYMENT_NOTIFY_GROUP = -1003553575069
@@ -510,198 +931,189 @@ def send_feedback_prompt(user_id, order_id):
 
 
 
+
+
+
 @app.route("/webhook", methods=["POST"])
-def flutterwave_webhook():
-
+def paystack_webhook():
     try:
-
-        # ================= SIGNATURE (PAYSTACK STYLE) =================
+        # ================= SECURITY & VALIDATION =================
         signature = request.headers.get("x-paystack-signature")
+        if not signature: return "Missing signature", 401
+        computed = hmac.new(PAYSTACK_SECRET.encode(), request.data, hashlib.sha512).hexdigest()
+        if signature != computed: return "Invalid signature", 401
 
-        if not signature:
-            return "Missing signature", 401
-
-        computed = hmac.new(
-            PAYSTACK_SECRET.encode(),
-            request.data,
-            hashlib.sha512
-        ).hexdigest()
-
-        if signature != computed:
-            return "Invalid signature", 401
-
-        # ================= PAYLOAD =================
         payload = request.json or {}
-
         event = payload.get("event")
-        if event != "charge.success":
-            return "Ignored", 200
+        if event != "charge.success": return "Ignored", 200
 
         data = payload.get("data", {})
-
         raw_reference = data.get("reference")
-        currency = data.get("currency")
         paid_amount = int(data.get("amount", 0) / 100)
 
-        # ===== FIX ORDER ID =====
         metadata = data.get("metadata", {}) or {}
         order_id = metadata.get("order_id")
-
         if not order_id and raw_reference:
             order_id = raw_reference.split("_")[0]
+        if not order_id: return "Missing order id", 200
 
-        if not order_id:
-            return "Missing order id", 200
-
-        # ================= DB =================
-        conn = get_conn()
-        cur = conn.cursor()
-
-        cur.execute(
-            "SELECT user_id, amount, paid FROM orders WHERE id=%s",
-            (order_id,)
-        )
+        conn = get_conn(); cur = conn.cursor()
+        cur.execute("SELECT user_id, amount, paid, type FROM orders WHERE id=%s", (order_id,))
         row = cur.fetchone()
 
+        # ================= 1. WALLET TOPUP ===================
         if not row:
-            cur.close()
-            conn.close()
-            return "Order not found", 200
+            wallet_conn = get_wallet_conn(); wallet_cur = wallet_conn.cursor()
+            wallet_cur.execute("SELECT user_id, amount, status FROM wallet_deposits WHERE id=%s", (order_id,))
+            dep = wallet_cur.fetchone()
 
-        user_id, expected_amount, paid = row
+            if not dep:
+                wallet_cur.close(); wallet_conn.close(); cur.close(); conn.close()
+                return "Order not found", 200
 
-        if paid == 1:
-            cur.close()
-            conn.close()
-            return "Already processed", 200
+            user_id, expected_amount, status = dep
+            if status == "success":
+                wallet_cur.close(); wallet_conn.close(); cur.close(); conn.close()
+                return "Already processed", 200
 
-        if paid_amount != expected_amount or currency != "NGN":
-            cur.close()
-            conn.close()
-            return "Wrong payment", 200
+            # Update Wallet Tables
+            wallet_cur.execute("UPDATE wallet_deposits SET status='success', paystack_ref=%s, paid_at=NOW() WHERE id=%s", (raw_reference, order_id))
+            wallet_cur.execute("INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance, updated_at = NOW()", (user_id, paid_amount))
+            wallet_cur.execute("INSERT INTO wallet_transactions (user_id, amount, type, reference, description) VALUES (%s,%s,'deposit',%s,'Wallet Top-up')", (user_id, paid_amount, order_id))
+            wallet_conn.commit(); wallet_cur.close(); wallet_conn.close()
 
-        # ================= ITEMS =================
-        cur.execute(
-            """
-            SELECT i.title, i.group_key
-            FROM order_items oi
-            JOIN items i ON i.id = oi.item_id
-            WHERE oi.order_id=%s
-            """,
-            (order_id,)
-        )
-
-        rows = cur.fetchall()
-
-        if not rows:
-            cur.close()
-            conn.close()
-            return "Empty order", 200
-
-        groups = {}
-
-        for title, group_key in rows:
-            key = group_key or f"single_{title}"
-
-            if key not in groups:
-                groups[key] = {
-                    "title": title,
-                    "count": 0
-                }
-
-            groups[key]["count"] += 1
-
-        lines = []
-        for g in groups.values():
-            if g["count"] > 1:
-                lines.append(f"• {g['title']} ({g['count']})")
-            else:
-                lines.append(f"• {g['title']}")
-
-        titles_text = "\n".join(lines)
-        items_count = len(groups)
-
-        # ================= USER INFO =================
-        cur.execute(
-            "SELECT first_name, last_name FROM visited_users WHERE user_id=%s",
-            (user_id,)
-        )
-        u = cur.fetchone()
-
-        if u and (u[0] or u[1]):
-            full_name = f"{u[0] or ''} {u[1] or ''}".strip()
-        else:
+            # --- Get Full Name from Telegram ---
             try:
-                chat = bot.get_chat(user_id)
-                full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
-            except Exception:
-                full_name = "User"
+                user_info = bot.get_chat(user_id)
+                full_name = f"{user_info.first_name or ''} {user_info.last_name or ''}".strip() or "User"
+                username = f"@{user_info.username}" if user_info.username else "None"
+            except:
+                cur.execute("SELECT first_name, username FROM visited_users WHERE user_id=%s", (user_id,))
+                u = cur.fetchone()
+                full_name = u[0] if u and u[0] else "User"
+                username = f"@{u[1]}" if u and u[1] else "None"
 
-        # ================= MARK AS PAID =================
-        cur.execute(
-            "UPDATE orders SET paid=1 WHERE id=%s",
-            (order_id,)
-        )
+            # User Wallet Message
+            bot.send_message(user_id, f"🎉 <b>CONGRATULATIONS {full_name}</b>\n\n💰 <b>Wallet credited:</b> ₦{paid_amount}\n🗃 <b>Order ID:</b> <code>{order_id}</code>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏦MY WALLET💵", callback_data="wallet")))
 
-        conn.commit()
-        cur.close()
-        conn.close()
+            # Admin Wallet Notify
+            if PAYMENT_NOTIFY_GROUP:
+                from datetime import datetime, timedelta
+                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+                admin_wallet_msg = (
+                    f"💰 <b>TOP-UP SUCCESSFUL</b>\n\n"
+                    f"👤 <b>Name:</b> {full_name}\n"
+                    f"🔗 <b>Username:</b> {username}\n"
+                    f"🆔 <b>User ID:</b> <code>{user_id}</code>\n\n"
+                    f"💳 <b>Top-up:</b> ₦{paid_amount}\n\n"
+                    f"🗃 <b>Order ID:</b> <code>{order_id}</code>\n"
+                    f"📊 <b>Status:</b> success\n\n"
+                    f"⏰ <b>Time:</b> {now}"
+                )
+                bot.send_message(PAYMENT_NOTIFY_GROUP, admin_wallet_msg, parse_mode="HTML")
 
-        # ================= USER MESSAGE =================
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "⬇️ DOWNLOAD ITEMS",
-                callback_data=f"deliver:{order_id}"
-            )
-        )
+            cur.close(); conn.close(); return "OK", 200
 
-        bot.send_message(
-            user_id,
-            f"""Hi {full_name} 👋
+        # ================= 2. FILM & VIP ORDERS ==============
+        user_id, expected_amount, paid, order_type = row
+        if paid == 1:
+            cur.close(); conn.close(); return "Already processed", 200
+        
+        cur.execute("UPDATE orders SET paid=1 WHERE id=%s", (order_id,))
 
-🎉 <b>An tabbatar da biyanka Alhamdulillah✅.</b>
+        if order_id in ORDER_MESSAGES:
+            try: bot.delete_message(ORDER_MESSAGES[order_id][0], ORDER_MESSAGES[order_id][1]); del ORDER_MESSAGES[order_id]
+            except: pass
 
-🎬 <b>Yanzu ka riga ka mallaki✅:</b>
-{titles_text}
+        # --- Get Full Name from Telegram for Film/VIP ---
+        try:
+            user_info = bot.get_chat(user_id)
+            full_name = f"{user_info.first_name or ''} {user_info.last_name or ''}".strip() or "User"
+            tg_username = f"@{user_info.username}" if user_info.username else "unknown"
+        except:
+            cur.execute("SELECT first_name, username FROM visited_users WHERE user_id=%s", (user_id,))
+            u = cur.fetchone()
+            full_name = u[0] if u and u[0] else "User"
+            tg_username = f"@{u[1]}" if u and u[1] else "unknown"
 
-━━━━━━━━━━━━━━
-📦 <b>Order:</b> Arrived ✅
-🔐 <b>Status:</b> Confirmed
-🆔 <b>Ref:</b> <code>{order_id}</code>
-━━━━━━━━━━━━━━
+        # ------------------ VIP ORDER ------------------
+        if order_type == "vip":
+            from datetime import datetime, timedelta
+            start_date = datetime.now()
+            end_date = start_date + (timedelta(minutes=VIP_DURATION_VALUE) if VIP_DURATION_UNIT == "minutes" else timedelta(days=VIP_DURATION_VALUE))
+            start_local = start_date + timedelta(hours=1)
+            end_local = end_date + timedelta(hours=1)
 
-🙏Mun gode da amincewa da mu 🤍  
-Danna <b>DOWNLOAD ITEMS</b> domin karɓa yanzu👇👇👇.
-""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
+            already_in_group = False
+            try:
+                member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+                if member.status in ["member", "administrator", "creator"]: already_in_group = True
+            except: already_in_group = False
 
-        # ================= ADMIN GROUP =================
-        if PAYMENT_NOTIFY_GROUP:
-            bot.send_message(
-                PAYMENT_NOTIFY_GROUP,
-                f"""🟢 <b>TRANSACTION COMPLETED</b>
+            if already_in_group:
+                cur.execute("INSERT INTO vip_members (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date) VALUES (%s,%s,%s,%s,'active',FALSE,FALSE,NOW()) ON CONFLICT (user_id) DO UPDATE SET order_id = EXCLUDED.order_id, join_date = EXCLUDED.join_date, expire_at = EXCLUDED.expire_at, status = 'active', warn1_sent = FALSE, warn2_sent = FALSE, payment_date = NOW()", (user_id, order_id, start_date, end_date))
+                bot.send_message(user_id, f"💎 <b>AN SABUNTA VIP NAKA</b>\n\nMuna tayaka murnar sabunta biyan VIP ɗinka.\n\n📅 <b>Ka biya a yau:</b> {start_local.strftime('%Y-%m-%d')}\n⏳ <b>Sake biya aranar ko kafin:</b> {end_local.strftime('%Y-%m-%d')}\n\nNa gode da kasancewa tare da mu 🙏", parse_mode="HTML")
+                admin_vip_title = "💎 VIP RENEWAL PAYMENT"
+            else:
+                cur.execute("INSERT INTO vip_members (user_id, order_id, join_date, expire_at, status, warn1_sent, warn2_sent, payment_date) VALUES (%s,%s,NULL,NULL,'active',FALSE,FALSE,NOW()) ON CONFLICT (user_id) DO UPDATE SET order_id = EXCLUDED.order_id, status = 'active', warn1_sent = FALSE, warn2_sent = FALSE, payment_date = NOW()", (user_id, order_id))
+                bot.send_message(user_id, f"💎 <b>VIP SUBSCRIPTION ACTIVATED</b>\n\n👤 <b>Name:</b> {full_name}\n🆔 <b>User ID:</b> <code>{user_id}</code>\n\n💳 <b>Amount Paid:</b> ₦{paid_amount}\n\n📅 <b>Start Date:</b> {start_local.strftime('%Y-%m-%d')}\n⏳ <b>End Date:</b> {end_local.strftime('%Y-%m-%d')}\n\n🔐 Click the button below to join the VIP Group.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🔐 JOIN VIP GROUP", callback_data=f"vipnow:{order_id}")))
+                admin_vip_title = "💎 NEW VIP SUBSCRIPTION"
 
-📦 Status: Confirmed
-🎬 Items: {items_count} files
-Item names:
-{titles_text}
+            if PAYMENT_NOTIFY_GROUP:
+                now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+                bot.send_message(PAYMENT_NOTIFY_GROUP, f"{admin_vip_title}\n\n👤 <b>Name:</b> {full_name}\n🔗 <b>Username:</b> {tg_username}\n🆔 <b>User ID:</b> <code>{user_id}</code>\n\n🗃 <b>Order ID:</b> <code>{order_id}</code>\n\n💰 <b>Amount:</b> ₦{paid_amount}\n⏰ <b>Time:</b> {now}", parse_mode="HTML")
 
-👤 User full name: {full_name}
-🆔 User ID: <code>{user_id}</code>
+        # ------------------ FILM ORDER ------------------
+        else:
+            cur.execute("SELECT i.title, i.group_key FROM order_items oi JOIN items i ON i.id = oi.item_id WHERE oi.order_id=%s", (order_id,))
+            rows = cur.fetchall()
+            
+            groups = {}
+            for title, group_key in rows:
+                key = group_key or f"single_{title}"
+                if key not in groups:
+                    groups[key] = {"title": title, "count": 0}
+                groups[key]["count"] += 1
 
-💳 Total amount: ₦{paid_amount}
-🧾 Ref: <code>{order_id}</code>
-""",
-                parse_mode="HTML"
-            )
+            lines = []
+            for g in groups.values():
+                if g["count"] > 1:
+                    lines.append(f"• {g['title']} ({g['count']})")
+                else:
+                    lines.append(f"• {g['title']}")
+            
+            titles_text = "\n".join(lines)
+            num_items = len(rows)
 
+            calc_cashback = int(paid_amount * CASHBACK_PERCENT)
+            cashback = min(calc_cashback, CASHBACK_LIMIT)
+            if cashback > 0:
+                wallet_conn = get_wallet_conn(); wallet_cur = wallet_conn.cursor()
+                wallet_cur.execute("INSERT INTO wallet_balance (user_id, balance) VALUES (%s,%s) ON CONFLICT (user_id) DO UPDATE SET balance = wallet_balance.balance + EXCLUDED.balance", (user_id, cashback))
+                wallet_conn.commit(); wallet_cur.close(); wallet_conn.close()
+                bot.send_message(user_id, f"🎁 <b>Ka samu kyautar Cashback:</b> ₦{cashback}\n\nAn sanya maka a wallet naka don siyan wani fim na gaba. 🤍", parse_mode="HTML")
+
+            bot.send_message(user_id, f"Hi {full_name} 👋\n\n🎉 <b>An tabbatar</b> da biyanka cikin nasara.\n\n🎬 <b>Yanzu ka riga ka mallaki:</b>\n{titles_text}\n\n━━━━━━━━━━━━━━\n📦 <b>Order:</b> Arrived ✅\n🔐 <b>Status:</b> Confirmed\n🆔 <b>Ref:</b>\n<code>{order_id}</code>\n━━━━━━━━━━━━━━\n\nMun gode da amincewa da mu 🤍\nDanna <b>DOWNLOAD ITEMS</b> domin karba yanzu.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("⬇️ DOWNLOAD ITEMS", callback_data=f"deliver:{order_id}")))
+
+            if PAYMENT_NOTIFY_GROUP:
+                admin_film_msg = (
+                    f"🟢 <b>TRANSACTION COMPLETED</b>\n\n"
+                    f"📦 Status: Confirmed\n"
+                    f"🎬 Items: {num_items} files\n"
+                    f"Item names:\n{titles_text}\n\n"
+                    f"👤 User full name: {full_name}\n"
+                    f"🆔 User ID: <code>{user_id}</code>\n\n"
+                    f"💳 Total amount: ₦{paid_amount}\n"
+                    f"🧾 Ref: <code>{order_id}</code>"
+                )
+                bot.send_message(PAYMENT_NOTIFY_GROUP, admin_film_msg, parse_mode="HTML")
+
+        conn.commit(); cur.close(); conn.close()
         return "OK", 200
 
-    except Exception:
-        return "ERROR", 500
+    except Exception as e:
+        print(f"Webhook Error: {e}"); return "ERROR", 500
+
 
 
 @app.route("/telegram", methods=["POST"])
@@ -1038,6 +1450,1939 @@ def deliver_items(call):
     )
 
     send_feedback_prompt(user_id, order_id)
+
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
+def vip_group_info(call):
+
+    text = """💎 <b>TSARIN SHIGA VIP GROUP</b>
+━━━━━━━━━━━━━━━━━━
+🔹 <b>Kudin Rijista:</b> ₦1,500  
+🔹 <b>Subscription:</b> Kwana 33  
+🔹 Ba za a sake biyan kudi ba har sai bayan kwanaki 30
+━━━━━━━━━━━━━━━━━━
+🔹 Bayan ka biya, za a tura maka <b>1-Time Secure Link</b>  
+🔹 A cikin VIP ana saka <b>sabbin fina-finan India duk sati</b>
+📅 <b>Ranaku:</b> Lahadi & Laraba
+━━━━━━━━━━━━━━━━━━
+🎬 Kana da damar neman:
+• Sabon fim  
+• Tsohon fim  
+• Fim na musamman  
+Ba tare da sake biyan wani ƙarin kuɗi ba.
+━━━━━━━━━━━━━━━━━━
+🔒 <b>VIP SUBSCRIPTION</b>
+👇👇👇👇👇👇👇
+"""
+
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("💳 SUBSCRIBE NOW", callback_data="subvip")
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        text,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    bot.answer_callback_query(call.id)
+
+
+# ================= ADMIN ADD MONEY TO WALLET =================
+@bot.message_handler(commands=["addmoney"])
+def admin_add_money(msg):
+
+    user_id = msg.from_user.id
+
+    # ===== ADMIN CHECK =====
+    if user_id != ADMIN_ID:
+        bot.reply_to(msg, "❌ You are not authorized to use this command.")
+        return
+
+    try:
+        parts = msg.text.split()
+
+        if len(parts) < 2:
+            bot.reply_to(msg, "Usage: /addmoney 500")
+            return
+
+        amount = int(parts[1])
+
+        if amount <= 0:
+            bot.reply_to(msg, "❌ Invalid amount.")
+            return
+
+    except:
+        bot.reply_to(msg, "❌ Invalid format.\nUse: /addmoney 500")
+        return
+
+    # ===== DB =====
+    wallet_conn = get_wallet_conn()
+    wallet_cur = wallet_conn.cursor()
+
+    try:
+
+        # ===== UPDATE BALANCE =====
+        wallet_cur.execute(
+            """
+            INSERT INTO wallet_balance (user_id, balance)
+            VALUES (%s,%s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+            balance = wallet_balance.balance + EXCLUDED.balance,
+            updated_at = NOW()
+            """,
+            (user_id, amount)
+        )
+
+        # ===== SAVE TRANSACTION =====
+        ref = f"admin_{user_id}_{int(time.time())}"
+
+        wallet_cur.execute(
+            """
+            INSERT INTO wallet_transactions
+            (user_id, amount, type, reference, description)
+            VALUES (%s,%s,'admin_credit',%s,'Admin Wallet Funding')
+            """,
+            (user_id, amount, ref)
+        )
+
+        wallet_conn.commit()
+
+        # ===== SUCCESS MESSAGE =====
+        bot.reply_to(
+            msg,
+            f"""✅ <b>WALLET FUNDED SUCCESSFULLY</b>
+
+💰 Amount Added: ₦{amount}
+🆔 Wallet ID: <code>{user_id}</code>
+
+Your wallet has been credited successfully.""",
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        wallet_conn.rollback()
+        bot.reply_to(msg, "❌ Failed to add money.")
+    
+    finally:
+        wallet_cur.close()
+        wallet_conn.close()
+
+
+# ======= VIP ORDER CREATOR (CALLBACK subvip) =========
+import uuid
+from psycopg2.extras import RealDictCursor
+
+@bot.callback_query_handler(func=lambda c: c.data == "subvip")
+def vipgroup_handler(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    first_name = c.from_user.first_name or "User"
+
+    conn = get_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ========= CHECK EXISTING UNPAID VIP =========
+    cur.execute(
+        """
+        SELECT id, amount
+        FROM orders
+        WHERE user_id=%s
+          AND type='vip'
+          AND paid=0
+        LIMIT 1
+        """,
+        (uid,)
+    )
+    row = cur.fetchone()
+
+    # ========= REUSE OR CREATE =========
+    if row:
+        order_id = row["id"]
+
+        if int(row["amount"]) != int(VIP_PRICE):
+            cur.execute(
+                "UPDATE orders SET amount=%s WHERE id=%s",
+                (VIP_PRICE, order_id)
+            )
+            conn.commit()
+    else:
+        order_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO orders (id, user_id, amount, paid, type)
+            VALUES (%s,%s,%s,0,'vip')
+            """,
+            (order_id, uid, VIP_PRICE)
+        )
+        conn.commit()
+
+    # ========= CREATE PAYMENT LINK =========
+    pay_url = create_paystack_payment(
+        uid,
+        order_id,
+        VIP_PRICE,
+        "VIP Subscription"
+    )
+
+    if not pay_url:
+        cur.close()
+        conn.close()
+        return
+
+    # ========= FORMAT =========
+    if VIP_DURATION_UNIT == "minutes":
+        duration_text = f"{VIP_DURATION_VALUE} Minutes"
+    else:
+        duration_text = f"{VIP_DURATION_VALUE} Days"
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+    # ✅ EDIT MESSAGE INSTEAD OF SEND
+    bot.edit_message_text(
+        f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
+
+{first_name}, you are almost in our VIP group.
+
+💎 VIP Algaita Bot(Group)
+💵 ₦{VIP_PRICE} only
+⏳ {duration_text} access
+
+⚡ Access starts after payment
+🔐 Secure payment
+
+Tap below to continue👇.
+""",
+        chat_id=c.message.chat.id,
+        message_id=c.message.message_id,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    # ✅ STORE MESSAGE IN MEMORY
+    ORDER_MESSAGES[order_id] = (
+        c.message.chat.id,
+        c.message.message_id
+    )
+
+    cur.close()
+    conn.close()
+
+import threading  
+import time  
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton  
+  
+  
+@bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))  
+def handle_vip_join(c):  
+  
+    try:  
+        bot.answer_callback_query(c.id)  
+  
+        user_id = c.from_user.id  
+        first_name = c.from_user.first_name or "User"  
+  
+        sent_chat_id = c.message.chat.id  
+        sent_message_id = c.message.message_id  
+  
+        # ===== JOIN BUTTON =====  
+        kb = InlineKeyboardMarkup()  
+        kb.add(  
+            InlineKeyboardButton(  
+                "🔐 Join VIP Now",  
+                url=VIP_LINK  
+            )  
+        )  
+  
+        bot.edit_message_text(  
+            f"🔐 <b>VIP ACCESS READY</b>\n\n"  
+            f"⏳ Link expires in {COUNTDOWN_SECONDS} seconds...\n\n"  
+            f"Tap below to join 👇",  
+            chat_id=sent_chat_id,  
+            message_id=sent_message_id,  
+            parse_mode="HTML",  
+            reply_markup=kb  
+        )  
+  
+        # ===== COUNTDOWN =====  
+        def countdown():  
+  
+            for remaining in range(COUNTDOWN_SECONDS - 1, -1, -1):  
+  
+                time.sleep(1)  
+  
+                # ===== CHECK DIRECT FROM GROUP =====  
+                try:  
+                    member = bot.get_chat_member(VIP_GROUP_ID, user_id)  
+  
+                    if member.status in ["member", "administrator", "creator"]:  
+  
+                        # ================= DB UPDATE ACTIVE =================  
+                        try:  
+                            from datetime import datetime, timedelta  
+  
+                            conn = get_conn()  
+                            cur = conn.cursor()  
+  
+                            # ✅ JOIN DATE = lokacin da ya shiga  
+                            join_date = datetime.now()  
+  
+                            # ✅ EXPIRE = lissafi daga saman file  
+                            if VIP_DURATION_UNIT == "minutes":  
+                                expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)  
+                            else:  
+                                expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)  
+  
+                            # ===== CHECK IF USER EXISTS =====
+                            cur.execute(
+                                "SELECT 1 FROM vip_members WHERE user_id=%s",
+                                (user_id,)
+                            )
+                            exists = cur.fetchone()
+
+                            if exists:
+                                cur.execute(  
+                                    """  
+                                    UPDATE vip_members  
+                                    SET status='active',  
+                                        join_date=%s,  
+                                        expire_at=%s,  
+                                        warn1_sent=FALSE,  
+                                        warn2_sent=FALSE  
+                                    WHERE user_id=%s  
+                                    """,  
+                                    (join_date, expire_at, user_id)  
+                                )  
+                            else:
+                                cur.execute(
+                                    """
+                                    INSERT INTO vip_members
+                                    (user_id, status, join_date, expire_at, warn1_sent, warn2_sent)
+                                    VALUES (%s, 'active', %s, %s, FALSE, FALSE)
+                                    """,
+                                    (user_id, join_date, expire_at)
+                                )
+
+                            conn.commit()  
+                            cur.close()  
+                            conn.close()  
+  
+                        except:  
+                            pass  
+                        # =====================================================  
+  
+                        # EDIT MESSAGE TO USER JOINED  
+                        try:  
+                            bot.edit_message_text(  
+                                f"{first_name} Joined ✅",  
+                                chat_id=sent_chat_id,  
+                                message_id=sent_message_id  
+                            )  
+                        except:  
+                            pass  
+  
+                        # SEND THANK YOU PRIVATE MESSAGE  
+                        try:  
+                            bot.send_message(  
+                                user_id,  
+                                "🙏 Thank you our valued customer.\n"  
+                                "Fatanmu zakaji dadin wannan group."  
+                            )  
+                        except:  
+                            pass  
+  
+                        return  
+                except:  
+                    pass  
+  
+                # ===== UPDATE COUNTDOWN =====  
+                try:  
+                    bot.edit_message_text(  
+                        f"🔐 <b>VIP ACCESS READY</b>\n\n"  
+                        f"⏳ Link expires in {remaining} seconds...\n\n"  
+                        f"Tap below to join 👇",  
+                        chat_id=sent_chat_id,  
+                        message_id=sent_message_id,  
+                        parse_mode="HTML",  
+                        reply_markup=kb  
+                    )  
+                except:  
+                    pass  
+  
+            # ===== TIME OUT =====  
+            admin_kb = InlineKeyboardMarkup()  
+            admin_kb.add(  
+                InlineKeyboardButton(  
+                    "👤ADMIN HELP",  
+                    url=f"https://t.me/{ADMIN_USERNAME}"  
+                )  
+            )  
+  
+            try:  
+                bot.edit_message_text(  
+                    "❌ TIME OUT\n\n"  
+                    "This link has expired.",  
+                    chat_id=sent_chat_id,  
+                    message_id=sent_message_id,  
+                    reply_markup=admin_kb  
+                )  
+            except:  
+                pass  
+  
+            try:  
+                time.sleep(2)  
+                bot.send_message(  
+                    user_id,  
+                    "An turama maka link amma link din har yayi expire\n"  
+                    "baka shiga ba don haka tintini admin."  
+                )  
+            except:  
+                pass  
+  
+        threading.Thread(target=countdown).start()  
+  
+    except:  
+        pass  
+  
+import threading  
+import time  
+from datetime import datetime  
+  
+def vip_expiry_checker():  
+  
+    while True:  
+        try:  
+            conn = get_conn()  
+            cur = conn.cursor()  
+  
+            cur.execute(  
+                """  
+                SELECT user_id  
+                FROM vip_members  
+                WHERE status='active'  
+                AND expire_at IS NOT NULL  
+                AND expire_at <= NOW()  
+                """  
+            )  
+  
+            expired_users = cur.fetchall()  
+  
+            for row in expired_users:  
+                user_id = row[0]  
+  
+                # ===== REMOVE FROM GROUP (NOT PERMANENT BAN) =====  
+                try:  
+                    bot.ban_chat_member(VIP_GROUP_ID, user_id)  
+                    bot.unban_chat_member(VIP_GROUP_ID, user_id)  
+                except:  
+                    pass  
+  
+                # ===== UPDATE STATUS =====  
+                try:  
+                    cur.execute(  
+                        """  
+                        UPDATE vip_members  
+                        SET status='expired'  
+                        WHERE user_id=%s  
+                        """,  
+                        (user_id,)  
+                    )  
+                    conn.commit()  
+  
+                    # ===== WARNING 3 CALL =====  
+                    send_expired_message(user_id)  
+  
+                except:  
+                    pass  
+  
+            cur.close()  
+            conn.close()  
+  
+        except:  
+            pass  
+  
+        time.sleep(43200)  # check every 60 seconds  
+  
+  
+threading.Thread(target=vip_expiry_checker, daemon=True).start()
+
+# ==========================================
+# VIP WARNING SYSTEM (HAUSA VERSION)
+# ==========================================
+
+import threading
+import time
+from datetime import datetime, timedelta
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+
+def vip_warning_system():
+
+    while True:
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+
+            now = datetime.now()
+
+            # ===============================
+            # GET ALL ACTIVE USERS
+            # ===============================
+            cur.execute("""
+                SELECT user_id, expire_at, warn1_sent, warn2_sent
+                FROM vip_members
+                WHERE status='active'
+                AND expire_at IS NOT NULL
+            """)
+
+            users = cur.fetchall()
+
+            for user_id, expire_at, warn1_sent, warn2_sent in users:
+
+                if not expire_at:
+                    continue
+
+                remaining = expire_at - now
+                remaining_seconds = remaining.total_seconds()
+
+                if remaining_seconds <= 0:
+                    continue
+
+                # =================================
+                # CONVERT WARNING 1 THRESHOLD
+                # =================================
+                if WARNING_1_UNIT == "minutes":
+                    threshold1 = timedelta(minutes=WARNING_1_VALUE)
+                    time_left_value = int(remaining_seconds // 60)
+                    unit_text = "minti"
+                else:
+                    threshold1 = timedelta(days=WARNING_1_VALUE)
+                    time_left_value = remaining.days
+                    unit_text = "kwana"
+
+                # =================================
+                # WARNING 1
+                # =================================
+                if not warn1_sent and remaining <= threshold1:
+
+                    try:
+                        kb = InlineKeyboardMarkup()
+                        kb.add(
+                            InlineKeyboardButton(
+                                "💳REPAY NOW",
+                                callback_data="subvip"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"⏳ TUNATARWA ZANYI MAKA\n\n"
+                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value} {unit_text}.\n\n"
+                            f"Muna matuƙar godiya da kasancewarka tare da mu ❤️\n"
+                            f"Da fatan za ka sabunta kafin lokacin ya ƙare domin cigaba da more VIP group.",
+                            reply_markup=kb
+                        )
+
+                        cur.execute("""
+                            UPDATE vip_members
+                            SET warn1_sent=TRUE
+                            WHERE user_id=%s
+                        """, (user_id,))
+                        conn.commit()
+
+                    except:
+                        pass
+
+                # =================================
+                # CONVERT WARNING 2 THRESHOLD
+                # =================================
+                if WARNING_2_UNIT == "minutes":
+                    threshold2 = timedelta(minutes=WARNING_2_VALUE)
+                    time_left_value2 = int(remaining_seconds // 60)
+                    unit_text2 = "minti"
+                else:
+                    threshold2 = timedelta(days=WARNING_2_VALUE)
+                    time_left_value2 = remaining.days
+                    unit_text2 = "kwana"
+
+                # =================================
+                # WARNING 2 (FINAL)
+                # =================================
+                if not warn2_sent and remaining <= threshold2:
+
+                    try:
+                        kb = InlineKeyboardMarkup()
+                        kb.add(
+                            InlineKeyboardButton(
+                                "💳REPAY NOW",
+                                callback_data="subvip"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"⚠NAZO NA SANAR DAKAI\n\n"
+                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value2} {unit_text2}.\n\n"
+                            f"Idan ba ka sabunta ba kafin lokacin ya cika, za a cire ka daga VIP group.\n"
+                            f"Da fatan za ka sabunta yanzu domin kada a cire ka.",
+                            reply_markup=kb
+                        )
+
+                        cur.execute("""
+                            UPDATE vip_members
+                            SET warn2_sent=TRUE
+                            WHERE user_id=%s
+                        """, (user_id,))
+                        conn.commit()
+
+                    except:
+                        pass
+
+            cur.close()
+            conn.close()
+
+        except:
+            pass
+
+        time.sleep(7200)  # yana duba duk 30 seconds
+
+
+threading.Thread(target=vip_warning_system, daemon=True).start()
+
+
+
+# ==========================================
+# WARNING 3 (AFTER USER REMOVAL MESSAGE)
+# SAKA WANNAN A CIKIN EXPIRY CHECKER
+# BAYAN AN CANZA status='expired'
+# ==========================================
+
+def send_expired_message(user_id):
+    try:
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "💳REPAY NOW",
+                callback_data="subvip"
+            )
+        )
+
+        bot.send_message(
+            user_id,
+            "❌ An Cire Ka Daga VIP\n\n"
+            "An cire ka daga VIP group saboda subscription ɗinka ya ƙare.\n\n"
+            "Idan kana son komawa domin cigaba da more manyan fina-finai sababbi da tsofaffi,\n"
+            "za ka iya sabunta biyanka yanzu.",
+            reply_markup=kb
+        )
+    except:
+        pass
+
+
+
+# ==========================================
+# ADMIN MANUAL VIP ADD SYSTEM (/vip)
+# ==========================================
+
+from datetime import datetime, timedelta
+
+vip_waiting_admin = set()
+
+
+# ===============================
+# /vip COMMAND (ADMIN ONLY)
+# ===============================
+@bot.message_handler(commands=['vip'])
+def vip_command(message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    vip_waiting_admin.add(message.from_user.id)
+
+    bot.send_message(
+        message.chat.id,
+        "Turo min user ID ɗin wanda kake son saka a VIP."
+    )
+
+
+# ===============================
+# RECEIVE USER ID
+# ===============================
+@bot.message_handler(func=lambda m: m.from_user.id in vip_waiting_admin)
+def receive_vip_user_id(message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        user_id = int(message.text.strip())
+    except:
+        bot.send_message(message.chat.id, "ID bai inganta ba. Tura lambar user ID kawai.")
+        return
+
+    vip_waiting_admin.remove(message.from_user.id)
+
+    # ===============================
+    # CHECK IF USER IS IN GROUP
+    # ===============================
+    try:
+        member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+
+        if member.status not in ["member", "administrator", "creator"]:
+            bot.send_message(
+                message.chat.id,
+                "Wannan user baya cikin group ɗin."
+            )
+            return
+
+    except:
+        bot.send_message(
+            message.chat.id,
+            "Wannan user baya cikin group ɗin."
+        )
+        return
+
+    # ===============================
+    # CREATE JOIN + EXPIRE DATE
+    # ===============================
+    join_date = datetime.now()
+
+    if VIP_DURATION_UNIT == "minutes":
+        expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)
+    else:
+        expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)
+
+    # ===============================
+    # INSERT OR UPDATE USER
+    # ===============================
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO vip_members (user_id, join_date, expire_at, status, warn1_sent, warn2_sent)
+            VALUES (%s, %s, %s, 'active', FALSE, FALSE)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                join_date = EXCLUDED.join_date,
+                expire_at = EXCLUDED.expire_at,
+                status = 'active',
+                warn1_sent = FALSE,
+                warn2_sent = FALSE
+        """, (user_id, join_date, expire_at))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+    except:
+        bot.send_message(message.chat.id, "An samu matsala wajen saka user a DB.")
+        return
+
+    # ===============================
+    # SUCCESS MESSAGE TO ADMIN
+    # ===============================
+    
+    # ✅ DISPLAY FIX (Nigeria Time +1 hour)
+    expire_local = expire_at + timedelta(hours=1)
+    expire_text = expire_local.strftime("%d %B %Y %H:%M:%S")
+
+    bot.send_message(
+        message.chat.id,
+        f"An saka user {user_id} a VIP.\n\n"
+        f"Za a cire shi ranar:\n{expire_text}"
+    )
+
+
+# MY WALLET SYSTEM
+# ==========================================
+
+@bot.callback_query_handler(func=lambda c: c.data == "wallet")
+def open_wallet(c):
+
+    # Kare error idan ba callback query ba
+    try:
+        bot.answer_callback_query(c.id)
+    except:
+        pass
+
+    uid = c.from_user.id
+    name = c.from_user.first_name or "User"
+
+    conn = get_wallet_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor()
+
+    # ===== CHECK WALLET =====
+    cur.execute(
+        "SELECT balance FROM wallet_balance WHERE user_id=%s",
+        (uid,)
+    )
+    row = cur.fetchone()
+
+    if row:
+        balance = int(row[0])
+        text = f"""Malam {name}
+Ragowar kudin ka ya rage
+
+💰 {name} Wallet
+🆔 Wallet ID: <code>{uid}</code>
+
+Balance: ₦{balance}
+"""
+    else:
+        balance = 0
+        text = f"""Malam {name}
+Yi hakuri baka da kudi a wallet din ka
+
+💰 {name} Wallet
+🆔 Wallet ID: <code>{uid}</code>
+
+Balance: ₦0
+"""
+
+    # ===== BUTTONS =====
+    kb = InlineKeyboardMarkup()
+
+    # Row 1
+    kb.row(
+        InlineKeyboardButton("➕ Add Money", callback_data="add_money"),
+        InlineKeyboardButton("📜 Transactions", callback_data="wallet_history")
+    )
+
+    # Row 2
+    kb.row(
+        InlineKeyboardButton("💸 Transfer Money", callback_data="transfer_money")
+    )
+
+    # ===== SEND MESSAGE =====
+    bot.send_message(
+        uid,
+        text,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    cur.close()
+    conn.close()
+
+# ==========================================
+# ==========================================
+# BACK TO WALLET (EDIT MESSAGE)
+# ==========================================
+
+@bot.callback_query_handler(func=lambda c: c.data == "wallet_back")
+def wallet_back(c):
+
+    # 🔒 Kare error idan ba callback query ba
+    try:
+        bot.answer_callback_query(c.id)
+    except:
+        pass
+
+    uid = c.from_user.id
+    name = c.from_user.first_name or "User"
+
+    conn = get_wallet_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT balance FROM wallet_balance WHERE user_id=%s",
+        (uid,)
+    )
+
+    row = cur.fetchone()
+
+    if row:
+        balance = int(row[0])
+        text = f"""Malam {name}
+Ragowar kudin ka ya rage
+
+💰 {name} Wallet
+🆔 Wallet ID: <code>{uid}</code>
+
+Balance: ₦{balance}
+"""
+    else:
+        text = f"""Malam {name}
+Yi hakuri baka da kudi a wallet din ka
+
+💰 {name} Wallet
+🆔 Wallet ID: <code>{uid}</code>
+
+Balance: ₦0
+"""
+
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("➕ Add Money", callback_data="add_money"),
+        InlineKeyboardButton("📜 Transactions", callback_data="wallet_history")
+    )
+
+    kb.row(
+        InlineKeyboardButton("💸 Transfer Money", callback_data="transfer_money")
+    )
+
+    bot.edit_message_text(
+        text,
+        chat_id=uid,
+        message_id=c.message.message_id,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+    cur.close()
+    conn.close()
+
+
+
+# ==========================================
+# WALLET LAST 5 TRANSACTIONS
+# ==========================================
+
+@bot.callback_query_handler(func=lambda c: c.data == "wallet_history")
+def wallet_history(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+
+    conn = get_wallet_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor()
+
+    # ===== GET LAST 5 =====
+    cur.execute(
+        """
+        SELECT amount, type, description, created_at
+        FROM wallet_transactions
+        WHERE user_id=%s
+        ORDER BY created_at DESC
+        LIMIT 5
+        """,
+        (uid,)
+    )
+
+    rows = cur.fetchall()
+
+    if not rows:
+
+        text = """📜 WALLET TRANSACTIONS
+
+Babu wani transaction a wallet ɗinka tukuna."""
+
+    else:
+
+        # ===== FORMAT MESSAGE =====
+        lines = []
+
+        for amount, ttype, desc, time in rows:
+
+            if ttype == "deposit":
+                sign = "➕"
+            elif ttype == "purchase":
+                sign = "➖"
+            else:
+                sign = "•"
+
+            lines.append(
+                f"{sign} ₦{amount} — {desc}\n🕒 {time}"
+            )
+
+        text = "📜 LAST 5 WALLET TRANSACTIONS\n\n"
+        text += "\n\n".join(lines)
+
+    # ===== BUTTON =====
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="wallet_back")
+    )
+
+    bot.edit_message_text(
+        text,
+        chat_id=uid,
+        message_id=c.message.message_id,
+        reply_markup=kb
+    )
+
+    cur.close()
+    conn.close()
+
+# ==========================================
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "add_money")
+def add_money_menu(c):
+
+    bot.answer_callback_query(c.id)
+
+    text = """💰 *Add Money*
+
+Zabi adadin da zaka deposit zuwa wallet din ka👇👇
+"""
+
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("₦200", callback_data="ng200"),
+        InlineKeyboardButton("₦500", callback_data="ng500")
+    )
+
+    kb.row(
+        InlineKeyboardButton("₦1000", callback_data="ng1000"),
+        InlineKeyboardButton("₦1500", callback_data="ng1500")
+    )
+
+    kb.row(
+        InlineKeyboardButton("₦2000", callback_data="ng2000")
+    )
+
+    bot.send_message(
+        c.message.chat.id,
+        text,
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+import uuid
+from psycopg2.extras import RealDictCursor
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ng"))
+def wallet_amount_handler(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    name = c.from_user.first_name or "User"
+
+    try:
+        amount = int(c.data.replace("ng",""))
+    except:
+        return
+
+    conn = get_wallet_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ===== CHECK PENDING WALLET ORDER =====
+    cur.execute(
+        """
+        SELECT id, amount
+        FROM wallet_deposits
+        WHERE user_id=%s
+        AND status='pending'
+        LIMIT 1
+        """,
+        (uid,)
+    )
+
+    row = cur.fetchone()
+
+    # ===== REUSE ORDER =====
+    if row:
+
+        order_id = row["id"]
+
+        if int(row["amount"]) != amount:
+
+            cur.execute(
+                """
+                UPDATE wallet_deposits
+                SET amount=%s
+                WHERE id=%s
+                """,
+                (amount, order_id)
+            )
+
+            conn.commit()
+
+    # ===== CREATE NEW ORDER =====
+    else:
+
+        order_id = str(uuid.uuid4())
+
+        cur.execute(
+            """
+            INSERT INTO wallet_deposits
+            (id, user_id, amount, type, status)
+            VALUES (%s,%s,%s,'wallet','pending')
+            """,
+            (order_id, uid, amount)
+        )
+
+        conn.commit()
+
+    cur.close()
+    conn.close()
+
+    # ===== CREATE PAYSTACK LINK =====
+    pay_url = create_paystack_payment(
+        uid,
+        order_id,
+        amount,
+        "Wallet Top-up"
+    )
+
+    if not pay_url:
+        return
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"💳 Top-up ₦{amount}", url=pay_url))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="wallet_back"))
+
+    bot.edit_message_text(
+        f"""💰 *Wallet Deposit*
+
+👤 Name: {name}
+
+💳 Amount: ₦{amount}
+
+🆔 Order ID:
+`{order_id}`
+
+Danna button da ke kasa domin biyan kudin.
+""",
+        chat_id=c.message.chat.id,
+        message_id=c.message.message_id,
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+    # ===== STORE MESSAGE FOR WEBHOOK DELETE =====
+    ORDER_MESSAGES[order_id] = (
+        c.message.chat.id,
+        c.message.message_id
+    )
+
+
+
+from datetime import datetime, timedelta
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("walletpay:"))
+def wallet_pay_handler(call):
+
+    user_id = call.from_user.id
+
+    try:
+        _, order_id = call.data.split(":", 1)
+    except:
+        bot.answer_callback_query(call.id, "Invalid order.")
+        return
+
+    # ================= MAIN DB =================
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT user_id, amount, paid, type
+        FROM orders
+        WHERE id=%s
+        """,
+        (order_id,)
+    )
+
+    row = cur.fetchone()
+
+    if not row:
+        cur.close()
+        conn.close()
+        bot.answer_callback_query(call.id, "Order not found.")
+        return
+
+    order_user, amount, paid, order_type = row
+
+    if order_user != user_id:
+        cur.close()
+        conn.close()
+        bot.answer_callback_query(call.id, "This order does not belong to you.")
+        return
+
+    if paid == 1:
+        cur.close()
+        conn.close()
+        bot.answer_callback_query(call.id, "Order already paid.")
+        return
+
+    # ================= WALLET DB =================
+    wallet_conn = get_wallet_conn()
+    wallet_cur = wallet_conn.cursor()
+
+    wallet_cur.execute(
+        "SELECT balance FROM wallet_balance WHERE user_id=%s",
+        (user_id,)
+    )
+
+    w = wallet_cur.fetchone()
+
+    balance = int(w[0]) if w else 0
+
+    # ================= INSUFFICIENT BALANCE =================
+    if balance < amount:
+
+        bot.answer_callback_query(
+            call.id,
+            f"❌ Insufficient wallet balance\n\n"
+            f"Your balance: ₦{balance}\n"
+            f"Movie price: ₦{amount}\n\n"
+            f"Please click PAY NOW to complete payment.",
+            show_alert=True
+        )
+
+        wallet_cur.close()
+        wallet_conn.close()
+        cur.close()
+        conn.close()
+        return
+
+    # ================= DEDUCT WALLET =================
+    wallet_cur.execute(
+        """
+        UPDATE wallet_balance
+        SET balance = balance - %s,
+            updated_at = NOW()
+        WHERE user_id=%s
+        """,
+        (amount, user_id)
+    )
+
+    wallet_cur.execute(
+        """
+        INSERT INTO wallet_transactions
+        (user_id, amount, type, reference, description)
+        VALUES (%s,%s,'purchase',%s,'Movie Purchase')
+        """,
+        (user_id, amount, order_id)
+    )
+
+    wallet_conn.commit()
+
+    wallet_cur.close()
+    wallet_conn.close()
+
+    # ================= MARK ORDER PAID =================
+    cur.execute(
+        "UPDATE orders SET paid=1 WHERE id=%s",
+        (order_id,)
+    )
+
+    # ================= DELETE ORDER MESSAGE =================
+    if order_id in ORDER_MESSAGES:
+
+        chat_id, message_id = ORDER_MESSAGES[order_id]
+
+        try:
+            bot.delete_message(chat_id, message_id)
+        except:
+            pass
+
+        del ORDER_MESSAGES[order_id]
+
+    # ================= USER INFO =================
+    cur.execute(
+        """
+        SELECT first_name, last_name
+        FROM visited_users
+        WHERE user_id=%s
+        """,
+        (user_id,)
+    )
+
+    u = cur.fetchone()
+
+    if u and (u[0] or u[1]):
+        full_name = f"{u[0] or ''} {u[1] or ''}".strip()
+    else:
+        try:
+            chat = bot.get_chat(user_id)
+            full_name = f"{chat.first_name or ''} {chat.last_name or ''}".strip()
+        except:
+            full_name = "User"
+
+    try:
+        chat = bot.get_chat(user_id)
+        tg_username = f"@{chat.username}" if chat.username else "unknown"
+    except:
+        tg_username = "unknown"
+
+    # ================= FETCH ITEMS =================
+    cur.execute(
+        """
+        SELECT i.title, i.group_key
+        FROM order_items oi
+        JOIN items i ON i.id = oi.item_id
+        WHERE oi.order_id=%s
+        """,
+        (order_id,)
+    )
+
+    rows = cur.fetchall()
+
+    groups = {}
+
+    for title, group_key in rows:
+
+        key = group_key or f"single_{title}"
+
+        if key not in groups:
+            groups[key] = {"title": title, "count": 0}
+
+        groups[key]["count"] += 1
+
+    lines = []
+    for g in groups.values():
+        if g["count"] > 1:
+            lines.append(f"{g['title']} ({g['count']})")
+        else:
+            lines.append(f"{g['title']}")
+
+    titles_text = ", ".join(lines) if lines else "N/A"
+
+    item_count = sum(g["count"] for g in groups.values())
+
+    # ================= TIME =================
+    now = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # ================= USER MESSAGE =================
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton(
+            "⬇️ DOWNLOAD NOW",
+            callback_data=f"deliver:{order_id}"
+        )
+    )
+
+    bot.send_message(
+        user_id,
+        f"""🎉 <b>PAYMENT SUCCESSFUL</b>
+You used wallet balance
+
+👤 Name: {full_name}
+🆔 User ID: <code>{user_id}</code>
+
+📦 Items: {item_count}
+🎬 Films: {titles_text}
+
+🗃 Order ID:
+<code>{order_id}</code>
+
+💰 Amount Paid: ₦{amount}
+⏰ Time: {now}
+
+⬇️ DOWNLOAD NOW""",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    # ================= NOTIFY GROUP =================
+    if PAYMENT_NOTIFY_GROUP_WALLET:
+
+        bot.send_message(
+            PAYMENT_NOTIFY_GROUP_WALLET,
+            f"""✅ <b>NEW PAYMENT SUCCESSFUL</b>
+
+👤 <b>User Full Name:</b> {full_name}
+🔗 <b>User Tag:</b> {tg_username}
+
+🗃 <b>Order ID:</b>
+<code>{order_id}</code>
+
+💳 <b>Payment Method:</b> Wallet
+
+🎬 <b>Films:</b> {titles_text}
+
+💰 <b>Amount:</b> ₦{amount}
+
+⏰ <b>Time:</b> {now}
+""",
+            parse_mode="HTML"
+        )
+
+
+# ==========================================
+# TRANSFER MONEY START
+# ==========================================
+
+@bot.callback_query_handler(func=lambda c: c.data == "transfer_money")
+def transfer_money_start(c):
+
+    uid = c.from_user.id
+    name = c.from_user.first_name or "User"
+
+    # ===== CHECK WALLET BALANCE =====
+    conn = get_wallet_conn()
+    if not conn:
+        bot.answer_callback_query(
+            c.id,
+            "Wallet error",
+            show_alert=True
+        )
+        return
+
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT balance FROM wallet_balance WHERE user_id=%s",
+        (uid,)
+    )
+
+    row = cur.fetchone()
+
+    if row:
+        balance = float(row[0])
+    else:
+        balance = 0.0
+
+    cur.close()
+    conn.close()
+
+    # ===== IF BALANCE LESS THAN 100 =====
+    if balance < 100:
+
+        bot.answer_callback_query(
+            c.id,
+            f"""Malam {name}
+
+Baka da isasshen kudi a wallet din ka.
+
+Your balance: ₦{balance:.2f}
+
+Domin turawa wani dole sai kana da akalla ₦100.""",
+            show_alert=True
+        )
+
+        return
+
+    # ===== CONTINUE NORMAL SYSTEM =====
+    bot.answer_callback_query(c.id)
+
+    text = """💸 TRANSFER MONEY
+
+You can send money to your friend here.
+
+A nan zaka iya tura kudi zuwa ga abokinka.
+
+🆔 In ka taba Transfer Now za'a bukaci Wallet ID na abokin ka.
+"""
+
+    kb = InlineKeyboardMarkup()
+
+    kb.row(
+        InlineKeyboardButton("⬅️ Back to Wallet", callback_data="wallet_back"),
+        InlineKeyboardButton("💸 Transfer Now", callback_data="start_transfer")
+    )
+
+    bot.edit_message_text(
+        text,
+        chat_id=uid,
+        message_id=c.message.message_id,
+        reply_markup=kb
+    )
+
+# ==========================================
+        
+# ==========================================
+# TRANSFER ENTER FRIEND ID
+# ==========================================
+
+import time
+import threading
+
+TRANSFER_STAGE = {}
+
+@bot.callback_query_handler(func=lambda c: c.data == "start_transfer")
+def ask_friend_id(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    chat_id = c.message.chat.id
+    msg_id = c.message.message_id
+
+    # ===== START TIMER =====
+    timeout = 120  # 2 minutes
+
+    TRANSFER_STAGE[uid] = {
+        "stage": "waiting_friend_id",
+        "expire": time.time() + timeout,
+        "msg_id": msg_id,
+        "chat_id": chat_id
+    }
+
+    def countdown():
+
+        remaining = timeout
+
+        while remaining > 0:
+
+            if uid not in TRANSFER_STAGE:
+                return
+
+            minutes = remaining // 60
+            seconds = remaining % 60
+
+            text = f"""💸 TRANSFER MONEY
+
+Aiko ID na abokinka wanda kake son aikawa kudin.
+
+Turo ID yanzu.
+
+⏳ Time remaining: {minutes}:{seconds:02d}
+"""
+
+            try:
+                bot.edit_message_text(
+                    text,
+                    chat_id=chat_id,
+                    message_id=msg_id
+                )
+            except:
+                pass
+
+            time.sleep(1)
+            remaining -= 1
+
+        # ===== TIMEOUT =====
+        if uid in TRANSFER_STAGE:
+
+            del TRANSFER_STAGE[uid]
+
+            try:
+                bot.edit_message_text(
+"""⌛ Transfer cancelled
+
+Ina tsammanin ka fasa tura kudin.
+
+⚠️ An yanke hanyar sadarwa.
+Ka sake gwadawa idan kana son tura kudi.""",
+                    chat_id=chat_id,
+                    message_id=msg_id
+                )
+            except:
+                pass
+
+    threading.Thread(target=countdown, daemon=True).start()
+
+
+# ==========================================
+# RECEIVE FRIEND ID
+# ==========================================
+
+@bot.message_handler(func=lambda m: m.from_user.id in TRANSFER_STAGE and TRANSFER_STAGE[m.from_user.id]["stage"] == "waiting_friend_id")
+def receive_friend_id(message):
+
+    uid = message.from_user.id
+    chat_id = message.chat.id
+    friend_id = message.text.strip()
+
+    # ===== CHECK NUMBER =====
+    if not friend_id.isdigit():
+        bot.send_message(
+            chat_id,
+            "❌ Wannan ba ID ba ne.\n\nTuro ID mai lamba kawai."
+        )
+        return
+
+    friend_id = int(friend_id)
+
+    # ===== PREVENT SELF TRANSFER =====
+    if friend_id == uid:
+        bot.send_message(
+            chat_id,
+            "❌ Ba zaka iya tura kudi zuwa kanka ba."
+        )
+        return
+
+    # ===== GET FULL SENDER NAME =====
+    sender_first = message.from_user.first_name or ""
+    sender_last = message.from_user.last_name or ""
+    sender_name = (sender_first + " " + sender_last).strip()
+
+    # ===== TRY GET RECEIVER NAME =====
+    try:
+        user = bot.get_chat(friend_id)
+        r_first = user.first_name or ""
+        r_last = user.last_name or ""
+        receiver_name = (r_first + " " + r_last).strip()
+        if receiver_name == "":
+            receiver_name = "User"
+    except:
+        receiver_name = "User"
+
+    # ===== DELETE COUNTDOWN MESSAGE =====
+    try:
+        bot.delete_message(
+            TRANSFER_STAGE[uid]["chat_id"],
+            TRANSFER_STAGE[uid]["msg_id"]
+        )
+    except:
+        pass
+
+    # ===== SAVE FRIEND ID =====
+    TRANSFER_STAGE[uid]["friend_id"] = friend_id
+    TRANSFER_STAGE[uid]["stage"] = "choose_amount"
+
+    # ===== BUTTONS =====
+    kb = InlineKeyboardMarkup(row_width=2)
+
+    kb.add(
+        InlineKeyboardButton("₦100", callback_data="tr100"),
+        InlineKeyboardButton("₦200", callback_data="tr200"),
+        InlineKeyboardButton("₦500", callback_data="tr500"),
+        InlineKeyboardButton("₦1000", callback_data="tr1000")
+    )
+
+    # ===== SEND MESSAGE =====
+    bot.send_message(
+        chat_id,
+f"""✅ An karbi ID
+
+👤 Sender Name: {sender_name}
+🆔 Sender ID: {uid}
+
+👤 Receiver Name: {receiver_name}
+🆔 Receiver ID: {friend_id}
+
+Zabi adadin kudin da zaka tura masa.
+""",
+        reply_markup=kb
+    )
+
+# ==========================================
+# TRANSFER AMOUNT SELECTED
+# ==========================================
+
+from psycopg2.extras import RealDictCursor
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("tr"))
+def transfer_amount_handler(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    chat_id = c.message.chat.id
+    msg_id = c.message.message_id
+
+    if uid not in TRANSFER_STAGE:
+        return
+
+    try:
+        amount = int(c.data.replace("tr", ""))
+    except:
+        return
+
+    friend_id = TRANSFER_STAGE[uid].get("friend_id")
+    friend_name = TRANSFER_STAGE[uid].get("friend_name", "User")
+
+    # ===== CHECK BALANCE =====
+    conn = get_wallet_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute(
+        "SELECT balance FROM wallet_balance WHERE user_id=%s",
+        (uid,)
+    )
+
+    row = cur.fetchone()
+
+    balance = int(row["balance"]) if row else 0
+
+    # ===== INSUFFICIENT BALANCE =====
+    if balance < amount:
+
+        text = f"""❌ Insufficient wallet balance
+
+Your balance: ₦{balance}
+Transfer amount: ₦{amount}
+
+Please add money to your wallet."""
+
+        try:
+            bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=msg_id
+            )
+        except:
+            pass
+
+        cur.close()
+        conn.close()
+        return
+
+    # ===== SAVE AMOUNT =====
+    TRANSFER_STAGE[uid]["amount"] = amount
+
+    # ===== CONFIRM MESSAGE =====
+    text = f"""💸 Confirm Transfer
+
+Are you sure you want to send money?
+
+👤 Receiver: {friend_name}
+🆔 User ID: {friend_id}
+
+💰 Amount: ₦{amount}
+
+Please confirm to continue."""
+
+    kb = InlineKeyboardMarkup()
+
+    kb.add(
+        InlineKeyboardButton(
+            "✅ Confirm Transfer",
+            callback_data="confirm_transfer"
+        )
+    )
+
+    try:
+        bot.edit_message_text(
+            text,
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=kb
+        )
+    except:
+        pass
+
+    cur.close()
+    conn.close()
+    
+# ==========================================
+# CONFIRM TRANSFER
+# ==========================================
+
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+
+
+TRANSFER_LOCK = set()
+
+@bot.callback_query_handler(func=lambda c: c.data == "confirm_transfer")
+def confirm_transfer(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    chat_id = c.message.chat.id
+    msg_id = c.message.message_id
+    sender_name = c.from_user.first_name or "User"
+    sender_username = c.from_user.username or "None"
+
+    # ===== PREVENT DOUBLE CLICK =====
+    if uid in TRANSFER_LOCK:
+        return
+
+    TRANSFER_LOCK.add(uid)
+
+    if uid not in TRANSFER_STAGE:
+        TRANSFER_LOCK.discard(uid)
+        return
+
+    friend_id = TRANSFER_STAGE[uid].get("friend_id")
+    friend_name = TRANSFER_STAGE[uid].get("friend_name","User")
+    amount = int(TRANSFER_STAGE[uid].get("amount",0))
+
+    if not friend_id or amount <= 0:
+        TRANSFER_LOCK.discard(uid)
+        return
+
+    conn = get_wallet_conn()
+    if not conn:
+        TRANSFER_LOCK.discard(uid)
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+
+        conn.autocommit = False
+
+        # ===== LOCK BALANCE =====
+        cur.execute(
+            "SELECT balance FROM wallet_balance WHERE user_id=%s FOR UPDATE",
+            (uid,)
+        )
+
+        row = cur.fetchone()
+        sender_balance = int(row["balance"]) if row else 0
+
+        if sender_balance < amount:
+
+            conn.rollback()
+
+            bot.edit_message_text(
+f"""❌ Transfer failed
+
+Your balance is not enough.
+
+Balance: ₦{sender_balance}
+Amount: ₦{amount}""",
+                chat_id=chat_id,
+                message_id=msg_id
+            )
+
+            TRANSFER_LOCK.discard(uid)
+            return
+
+        # ===== DEDUCT SENDER =====
+        cur.execute(
+            """
+            UPDATE wallet_balance
+            SET balance = balance - %s
+            WHERE user_id=%s
+            """,
+            (amount, uid)
+        )
+
+        # ===== ADD RECEIVER =====
+        cur.execute(
+            """
+            INSERT INTO wallet_balance (user_id, balance)
+            VALUES (%s,%s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET balance = wallet_balance.balance + %s
+            """,
+            (friend_id, amount, amount)
+        )
+
+        # ===== TRANSACTION LOG =====
+        cur.execute(
+            """
+            INSERT INTO wallet_transactions
+            (user_id, amount, type, description)
+            VALUES (%s,%s,'transfer_out','Money sent')
+            """,
+            (uid, amount)
+        )
+
+        cur.execute(
+            """
+            INSERT INTO wallet_transactions
+            (user_id, amount, type, description)
+            VALUES (%s,%s,'transfer_in','Money received')
+            """,
+            (friend_id, amount)
+        )
+
+        conn.commit()
+
+    except Exception:
+
+        conn.rollback()
+
+        bot.edit_message_text(
+"""❌ Transfer failed
+
+Network error occurred.
+Please try again.""",
+            chat_id=chat_id,
+            message_id=msg_id
+        )
+
+        cur.close()
+        conn.close()
+
+        TRANSFER_LOCK.discard(uid)
+        return
+
+    cur.close()
+    conn.close()
+
+    # ===== REMOVE SESSION =====
+    if uid in TRANSFER_STAGE:
+        del TRANSFER_STAGE[uid]
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # ===== RECEIVER MESSAGE =====
+    try:
+        bot.send_message(
+            friend_id,
+f"""💰 You received money from your friend
+
+👤 Sender: {sender_name}
+🆔 User ID: {uid}
+
+💵 Amount: ₦{amount}
+
+⏰ Time: {now}"""
+        )
+    except:
+        pass
+
+    # ===== EDIT MESSAGE (SENDER) =====
+    bot.edit_message_text(
+f"""🎉 Great!
+
+You sent ₦{amount} to your friend.
+
+👤 Name: {friend_name}
+🆔 User ID: {friend_id}
+
+💵 Amount: ₦{amount}
+
+⏰ Time: {now}""",
+        chat_id=chat_id,
+        message_id=msg_id
+    )
+
+    # ===== ADMIN NOTIFY =====
+    try:
+        bot.send_message(
+            ADMIN_ID,
+f"""💸 New Wallet Transfer
+
+User {sender_name} sent ₦{amount} to his friend.
+
+Sender:
+Name: {sender_name}
+Username: @{sender_username}
+ID: {uid}
+
+Receiver:
+Name: {friend_name}
+ID: {friend_id}
+
+Time: {now}
+
+Status: SUCCESS"""
+        )
+    except:
+        pass
+
+    # ===== RELEASE LOCK =====
+    TRANSFER_LOCK.discard(uid)   
+
 
 
 
@@ -2071,13 +4416,17 @@ def reply_menu(uid=None):
         InlineKeyboardButton(my_orders_label, callback_data="myorders_new")
     )
 
-    if uid in ADMINS:
+    # ➕ MY WALLET (GA KOWA)
+    kb.add(InlineKeyboardButton("💰 MY WALLET", callback_data="wallet"))
 
+    # ⬇️ SERIES&ADD (Yanzu a nan yake, ba a sama ba)
+    if uid in ADMINS:
         kb.add(InlineKeyboardButton("☢SERIES&ADD🎬", callback_data="groupitems"))
 
+    # Cart
     kb.add(InlineKeyboardButton(cart_label, callback_data="viewcart"))
 
-    # ✅ Support Help yanzu URL ne kamar Our Channel
+    # Support Help (URL)
     kb.add(
         InlineKeyboardButton(
             support_label,
@@ -2085,33 +4434,45 @@ def reply_menu(uid=None):
         )
     )
 
-    # Add a full-width Our Channel row (as in original layout screenshot)
-    kb.add(InlineKeyboardButton(channel_label, url=f"https://t.me/{CHANNEL.lstrip('@')}"))
+    # ❌ An cire "Our Channel" na sama
+    # (BA A NAN KUMA)
 
-    # Then add a row with Home (KOMA FARKO) and Our Channel side-by-side
+    # ===== ROW: HOME + OUR CHANNEL =====
     kb.row(
         InlineKeyboardButton(home_label, callback_data="go_home"),
         InlineKeyboardButton(channel_label, url=f"https://t.me/{CHANNEL.lstrip('@')}")
     )
 
+    # Change Language
     kb.row(InlineKeyboardButton(change_label, callback_data="change_language"))
 
     return kb
 
 
 
+
+
+
 def user_main_menu(uid=None):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
 
-    weekly_films = tr_user(uid, "btn_weekly_films", default="Films din wannan satin")
-    cart_label   = tr_user(uid, "btn_cart", default="🧾 Cart")
-    help_label   = tr_user(uid, "btn_help", default="Taimako")
+    cart_label = tr_user(uid, "btn_cart", default="🧾 Cart")
+    help_label = tr_user(uid, "btn_help", default="Taimako")
 
-    kb.add(KeyboardButton(weekly_films))
-    kb.add(KeyboardButton(cart_label), KeyboardButton(help_label))
+    wallet_label = "🏦My wallet💰"
+
+    # ===== MY WALLET a sama =====
+    kb.row(
+        KeyboardButton(wallet_label)
+    )
+
+    # ===== CART + HELP a kasa =====
+    kb.row(
+        KeyboardButton(cart_label),
+        KeyboardButton(help_label)
+    )
 
     return kb
-
 
 #Start
 def movie_buttons_inline(mid, user_id=None):
@@ -2242,22 +4603,37 @@ def getgroupid(message):
 
 @bot.message_handler(
     func=lambda msg: isinstance(getattr(msg, "text", None), str)
-    and msg.text in ["Films din wannan satin", "Taimako", "🧾 Cart"]
+    and msg.text in ["Taimako", "🧾 Cart", "🏦My wallet💰"]
 )
 def user_buttons(message):
     txt = message.text
     uid = message.from_user.id
 
-    # ======= FILMS =======
-    if txt == "Films din wannan satin":
+    # ======= MY WALLET =======
+    if txt == "🏦My wallet💰":
+
+        class CallMock:
+            def __init__(self, msg):
+                self.id = "wallet_text_button"
+                self.from_user = msg.from_user
+                self.message = msg
+
         try:
-            send_weekly_list(message)
+            open_wallet(CallMock(message))
+
         except Exception as e:
-            print("Films din wannan satin ERROR:", e)
+
+            import traceback
+            error_details = traceback.format_exc()
+
             bot.send_message(
                 message.chat.id,
-                "⚠️ An samu matsala wajen nuna fina-finan wannan satin."
+                f"❌ WALLET ERROR\n\n"
+                f"Type: {type(e).__name__}\n"
+                f"Message: {str(e)}\n\n"
+                f"Trace:\n{error_details[:3000]}"
             )
+
         return
 
     # ======= TAIMAKO =======
@@ -2334,327 +4710,678 @@ Error:
 
         return
     #karshe
+@bot.callback_query_handler(func=lambda c: c.data == "vipgroup")
+def vip_group_info(call):
 
-# ================== FINAL ISOLATED ERASER SYSTEM ==================
+    text = """💎 <b>TSARIN SHIGA VIP GROUP</b>
+━━━━━━━━━━━━━━━━━━
+🔹 <b>Kudin Rijista:</b> ₦1,500  
+🔹 <b>Subscription:</b> Kwana 33  
+🔹 Ba za a sake biyan kudi ba har sai bayan kwanaki 30
+━━━━━━━━━━━━━━━━━━
+🔹 Bayan ka biya, za a tura maka <b>1-Time Secure Link</b>  
+🔹 A cikin VIP ana saka <b>sabbin fina-finan India duk sati</b>
+📅 <b>Ranaku:</b> Lahadi & Laraba
+━━━━━━━━━━━━━━━━━━
+🎬 Kana da damar neman:
+• Sabon fim  
+• Tsohon fim  
+• Fim na musamman  
+Ba tare da sake biyan wani ƙarin kuɗi ba.
+━━━━━━━━━━━━━━━━━━
+🔒 <b>VIP SUBSCRIPTION</b>
+👇👇👇👇👇👇👇
+"""
 
-import os, json, random, time, re
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("💳 SUBSCRIBE NOW", callback_data="subvip")
+    )
+
+    bot.send_message(
+        call.message.chat.id,
+        text,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    bot.answer_callback_query(call.id)
+
+
+# ======= VIP ORDER CREATOR (CALLBACK subvip) =========
+import uuid
+from psycopg2.extras import RealDictCursor
+
+@bot.callback_query_handler(func=lambda c: c.data == "subvip")
+def vipgroup_handler(c):
+
+    bot.answer_callback_query(c.id)
+
+    uid = c.from_user.id
+    first_name = c.from_user.first_name or "User"
+
+    conn = get_conn()
+    if not conn:
+        return
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ========= CHECK EXISTING UNPAID VIP =========
+    cur.execute(
+        """
+        SELECT id, amount
+        FROM orders
+        WHERE user_id=%s
+          AND type='vip'
+          AND paid=0
+        LIMIT 1
+        """,
+        (uid,)
+    )
+    row = cur.fetchone()
+
+    # ========= REUSE OR CREATE =========
+    if row:
+        order_id = row["id"]
+
+        if int(row["amount"]) != int(VIP_PRICE):
+            cur.execute(
+                "UPDATE orders SET amount=%s WHERE id=%s",
+                (VIP_PRICE, order_id)
+            )
+            conn.commit()
+    else:
+        order_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO orders (id, user_id, amount, paid, type)
+            VALUES (%s,%s,%s,0,'vip')
+            """,
+            (order_id, uid, VIP_PRICE)
+        )
+        conn.commit()
+
+    # ========= CREATE PAYMENT LINK =========
+    pay_url = create_paystack_payment(
+        uid,
+        order_id,
+        VIP_PRICE,
+        "VIP Subscription"
+    )
+
+    if not pay_url:
+        cur.close()
+        conn.close()
+        return
+
+    # ========= FORMAT =========
+    if VIP_DURATION_UNIT == "minutes":
+        duration_text = f"{VIP_DURATION_VALUE} Minutes"
+    else:
+        duration_text = f"{VIP_DURATION_VALUE} Days"
+
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton(f"💳 Pay ₦{VIP_PRICE}", url=pay_url))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+    # ✅ EDIT MESSAGE INSTEAD OF SEND
+    bot.edit_message_text(
+        f"""🔥 <b>UNLOCK VIP ACCESS</b> 🔥
+
+{first_name}, you are almost in our VIP group.
+
+💎 VIP Algaita Bot(Group)
+💵 ₦{VIP_PRICE} only
+⏳ {duration_text} access
+
+⚡ Access starts after payment
+🔐 Secure payment
+
+Tap below to continue👇.
+""",
+        chat_id=c.message.chat.id,
+        message_id=c.message.message_id,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    # ✅ STORE MESSAGE IN MEMORY
+    ORDER_MESSAGES[order_id] = (
+        c.message.chat.id,
+        c.message.message_id
+    )
+
+    cur.close()
+    conn.close()
+
+import threading  
+import time  
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton  
+  
+  
+@bot.callback_query_handler(func=lambda c: c.data.startswith("vipnow:"))  
+def handle_vip_join(c):  
+  
+    try:  
+        bot.answer_callback_query(c.id)  
+  
+        user_id = c.from_user.id  
+        first_name = c.from_user.first_name or "User"  
+  
+        sent_chat_id = c.message.chat.id  
+        sent_message_id = c.message.message_id  
+  
+        # ===== JOIN BUTTON =====  
+        kb = InlineKeyboardMarkup()  
+        kb.add(  
+            InlineKeyboardButton(  
+                "🔐 Join VIP Now",  
+                url=VIP_LINK  
+            )  
+        )  
+  
+        bot.edit_message_text(  
+            f"🔐 <b>VIP ACCESS READY</b>\n\n"  
+            f"⏳ Link expires in {COUNTDOWN_SECONDS} seconds...\n\n"  
+            f"Tap below to join 👇",  
+            chat_id=sent_chat_id,  
+            message_id=sent_message_id,  
+            parse_mode="HTML",  
+            reply_markup=kb  
+        )  
+  
+        # ===== COUNTDOWN =====  
+        def countdown():  
+  
+            for remaining in range(COUNTDOWN_SECONDS - 1, -1, -1):  
+  
+                time.sleep(1)  
+  
+                # ===== CHECK DIRECT FROM GROUP =====  
+                try:  
+                    member = bot.get_chat_member(VIP_GROUP_ID, user_id)  
+  
+                    if member.status in ["member", "administrator", "creator"]:  
+  
+                        # ================= DB UPDATE ACTIVE =================  
+                        try:  
+                            from datetime import datetime, timedelta  
+  
+                            conn = get_conn()  
+                            cur = conn.cursor()  
+  
+                            # ✅ JOIN DATE = lokacin da ya shiga  
+                            join_date = datetime.now()  
+  
+                            # ✅ EXPIRE = lissafi daga saman file  
+                            if VIP_DURATION_UNIT == "minutes":  
+                                expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)  
+                            else:  
+                                expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)  
+  
+                            # ===== CHECK IF USER EXISTS =====
+                            cur.execute(
+                                "SELECT 1 FROM vip_members WHERE user_id=%s",
+                                (user_id,)
+                            )
+                            exists = cur.fetchone()
+
+                            if exists:
+                                cur.execute(  
+                                    """  
+                                    UPDATE vip_members  
+                                    SET status='active',  
+                                        join_date=%s,  
+                                        expire_at=%s,  
+                                        warn1_sent=FALSE,  
+                                        warn2_sent=FALSE  
+                                    WHERE user_id=%s  
+                                    """,  
+                                    (join_date, expire_at, user_id)  
+                                )  
+                            else:
+                                cur.execute(
+                                    """
+                                    INSERT INTO vip_members
+                                    (user_id, status, join_date, expire_at, warn1_sent, warn2_sent)
+                                    VALUES (%s, 'active', %s, %s, FALSE, FALSE)
+                                    """,
+                                    (user_id, join_date, expire_at)
+                                )
+
+                            conn.commit()  
+                            cur.close()  
+                            conn.close()  
+  
+                        except:  
+                            pass  
+                        # =====================================================  
+  
+                        # EDIT MESSAGE TO USER JOINED  
+                        try:  
+                            bot.edit_message_text(  
+                                f"{first_name} Joined ✅",  
+                                chat_id=sent_chat_id,  
+                                message_id=sent_message_id  
+                            )  
+                        except:  
+                            pass  
+  
+                        # SEND THANK YOU PRIVATE MESSAGE  
+                        try:  
+                            bot.send_message(  
+                                user_id,  
+                                "🙏 Thank you our valued customer.\n"  
+                                "Fatanmu zakaji dadin wannan group."  
+                            )  
+                        except:  
+                            pass  
+  
+                        return  
+                except:  
+                    pass  
+  
+                # ===== UPDATE COUNTDOWN =====  
+                try:  
+                    bot.edit_message_text(  
+                        f"🔐 <b>VIP ACCESS READY</b>\n\n"  
+                        f"⏳ Link expires in {remaining} seconds...\n\n"  
+                        f"Tap below to join 👇",  
+                        chat_id=sent_chat_id,  
+                        message_id=sent_message_id,  
+                        parse_mode="HTML",  
+                        reply_markup=kb  
+                    )  
+                except:  
+                    pass  
+  
+            # ===== TIME OUT =====  
+            admin_kb = InlineKeyboardMarkup()  
+            admin_kb.add(  
+                InlineKeyboardButton(  
+                    "👤ADMIN HELP",  
+                    url=f"https://t.me/{ADMIN_USERNAME}"  
+                )  
+            )  
+  
+            try:  
+                bot.edit_message_text(  
+                    "❌ TIME OUT\n\n"  
+                    "This link has expired.",  
+                    chat_id=sent_chat_id,  
+                    message_id=sent_message_id,  
+                    reply_markup=admin_kb  
+                )  
+            except:  
+                pass  
+  
+            try:  
+                time.sleep(2)  
+                bot.send_message(  
+                    user_id,  
+                    "An turama maka link amma link din har yayi expire\n"  
+                    "baka shiga ba don haka tintini admin."  
+                )  
+            except:  
+                pass  
+  
+        threading.Thread(target=countdown).start()  
+  
+    except:  
+        pass  
+  
+import threading  
+import time  
+from datetime import datetime  
+  
+def vip_expiry_checker():  
+  
+    while True:  
+        try:  
+            conn = get_conn()  
+            cur = conn.cursor()  
+  
+            cur.execute(  
+                """  
+                SELECT user_id  
+                FROM vip_members  
+                WHERE status='active'  
+                AND expire_at IS NOT NULL  
+                AND expire_at <= NOW()  
+                """  
+            )  
+  
+            expired_users = cur.fetchall()  
+  
+            for row in expired_users:  
+                user_id = row[0]  
+  
+                # ===== REMOVE FROM GROUP (NOT PERMANENT BAN) =====  
+                try:  
+                    bot.ban_chat_member(VIP_GROUP_ID, user_id)  
+                    bot.unban_chat_member(VIP_GROUP_ID, user_id)  
+                except:  
+                    pass  
+  
+                # ===== UPDATE STATUS =====  
+                try:  
+                    cur.execute(  
+                        """  
+                        UPDATE vip_members  
+                        SET status='expired'  
+                        WHERE user_id=%s  
+                        """,  
+                        (user_id,)  
+                    )  
+                    conn.commit()  
+  
+                    # ===== WARNING 3 CALL =====  
+                    send_expired_message(user_id)  
+  
+                except:  
+                    pass  
+  
+            cur.close()  
+            conn.close()  
+  
+        except:  
+            pass  
+  
+        time.sleep(60)  # check every 60 seconds  
+  
+  
+threading.Thread(target=vip_expiry_checker, daemon=True).start()
+
+# ==========================================
+# VIP WARNING SYSTEM (HAUSA VERSION)
+# ==========================================
+
+import threading
+import time
 from datetime import datetime, timedelta
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-ERASER_BACKUP_FOLDER = "eraser_backups"
-ERASER_PASSWORD_DEFAULT = "E66337"
-ERASER_OTP_TTL = 120
-ERASER_MAX_RESEND = 3
-ERASER_RESEND_COOLDOWN = 30
-ERASER_BACKUP_TTL_DAYS = 30
 
-os.makedirs(ERASER_BACKUP_FOLDER, exist_ok=True)
+def vip_warning_system():
 
-# ================= DATABASE (POSTGRES) =================
-try:
-    conn = get_conn()
-    cur = conn.cursor()
+    while True:
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS eraser_settings(
-            key TEXT PRIMARY KEY,
-            value TEXT
+            now = datetime.now()
+
+            # ===============================
+            # GET ALL ACTIVE USERS
+            # ===============================
+            cur.execute("""
+                SELECT user_id, expire_at, warn1_sent, warn2_sent
+                FROM vip_members
+                WHERE status='active'
+                AND expire_at IS NOT NULL
+            """)
+
+            users = cur.fetchall()
+
+            for user_id, expire_at, warn1_sent, warn2_sent in users:
+
+                if not expire_at:
+                    continue
+
+                remaining = expire_at - now
+                remaining_seconds = remaining.total_seconds()
+
+                if remaining_seconds <= 0:
+                    continue
+
+                # =================================
+                # CONVERT WARNING 1 THRESHOLD
+                # =================================
+                if WARNING_1_UNIT == "minutes":
+                    threshold1 = timedelta(minutes=WARNING_1_VALUE)
+                    time_left_value = int(remaining_seconds // 60)
+                    unit_text = "minti"
+                else:
+                    threshold1 = timedelta(days=WARNING_1_VALUE)
+                    time_left_value = remaining.days
+                    unit_text = "kwana"
+
+                # =================================
+                # WARNING 1
+                # =================================
+                if not warn1_sent and remaining <= threshold1:
+
+                    try:
+                        kb = InlineKeyboardMarkup()
+                        kb.add(
+                            InlineKeyboardButton(
+                                "💳REPAY NOW",
+                                callback_data="subvip"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"⏳ TUNATARWA ZANYI MAKA\n\n"
+                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value} {unit_text}.\n\n"
+                            f"Muna matuƙar godiya da kasancewarka tare da mu ❤️\n"
+                            f"Da fatan za ka sabunta kafin lokacin ya ƙare domin cigaba da more VIP group.",
+                            reply_markup=kb
+                        )
+
+                        cur.execute("""
+                            UPDATE vip_members
+                            SET warn1_sent=TRUE
+                            WHERE user_id=%s
+                        """, (user_id,))
+                        conn.commit()
+
+                    except:
+                        pass
+
+                # =================================
+                # CONVERT WARNING 2 THRESHOLD
+                # =================================
+                if WARNING_2_UNIT == "minutes":
+                    threshold2 = timedelta(minutes=WARNING_2_VALUE)
+                    time_left_value2 = int(remaining_seconds // 60)
+                    unit_text2 = "minti"
+                else:
+                    threshold2 = timedelta(days=WARNING_2_VALUE)
+                    time_left_value2 = remaining.days
+                    unit_text2 = "kwana"
+
+                # =================================
+                # WARNING 2 (FINAL)
+                # =================================
+                if not warn2_sent and remaining <= threshold2:
+
+                    try:
+                        kb = InlineKeyboardMarkup()
+                        kb.add(
+                            InlineKeyboardButton(
+                                "💳REPAY NOW",
+                                callback_data="subvip"
+                            )
+                        )
+
+                        bot.send_message(
+                            user_id,
+                            f"⚠NAZO NA SANAR DAKAI\n\n"
+                            f"Subscription ɗinka (ALGAITA VIP) zai kare nan da {time_left_value2} {unit_text2}.\n\n"
+                            f"Idan ba ka sabunta ba kafin lokacin ya cika, za a cire ka daga VIP group.\n"
+                            f"Da fatan za ka sabunta yanzu domin kada a cire ka.",
+                            reply_markup=kb
+                        )
+
+                        cur.execute("""
+                            UPDATE vip_members
+                            SET warn2_sent=TRUE
+                            WHERE user_id=%s
+                        """, (user_id,))
+                        conn.commit()
+
+                    except:
+                        pass
+
+            cur.close()
+            conn.close()
+
+        except:
+            pass
+
+        time.sleep(30)  # yana duba duk 30 seconds
+
+
+threading.Thread(target=vip_warning_system, daemon=True).start()
+
+
+
+# ==========================================
+# WARNING 3 (AFTER USER REMOVAL MESSAGE)
+# SAKA WANNAN A CIKIN EXPIRY CHECKER
+# BAYAN AN CANZA status='expired'
+# ==========================================
+
+def send_expired_message(user_id):
+    try:
+        kb = InlineKeyboardMarkup()
+        kb.add(
+            InlineKeyboardButton(
+                "💳REPAY NOW",
+                callback_data="subvip"
+            )
         )
-    """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS eraser_backups(
-            id SERIAL PRIMARY KEY,
-            filename TEXT,
-            created_at TIMESTAMP
+        bot.send_message(
+            user_id,
+            "❌ An Cire Ka Daga VIP\n\n"
+            "An cire ka daga VIP group saboda subscription ɗinka ya ƙare.\n\n"
+            "Idan kana son komawa domin cigaba da more manyan fina-finai sababbi da tsofaffi,\n"
+            "za ka iya sabunta biyanka yanzu.",
+            reply_markup=kb
         )
-    """)
-
-    conn.commit()
-    cur.close()
-    conn.close()
-except Exception as e:
-    print("ERASER DB INIT ERROR:", e)
-
-# ================= HELPERS =================
-def eraser_reset_kb():
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🔑 Reset Password", callback_data="eraser_forgot"))
-    kb.add(InlineKeyboardButton("✖ Cancel", callback_data="eraser_cancel"))
-    return kb
-
-# ================= PASSWORD =================
-def _eraser_get_password():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        "SELECT value FROM eraser_settings WHERE key=%s",
-        ("eraser_password",)
-    )
-    r = cur.fetchone()
-
-    if r and r[0]:
-        cur.close()
-        conn.close()
-        return r[0]
-
-    cur.execute(
-        """
-        INSERT INTO eraser_settings(key,value)
-        VALUES(%s,%s)
-        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
-        """,
-        ("eraser_password", ERASER_PASSWORD_DEFAULT)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-    return ERASER_PASSWORD_DEFAULT
+    except:
+        pass
 
 
-def _eraser_set_password(p):
-    conn = get_conn()
-    cur = conn.cursor()
 
-    cur.execute(
-        """
-        INSERT INTO eraser_settings(key,value)
-        VALUES(%s,%s)
-        ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
-        """,
-        ("eraser_password", p)
-    )
+# ==========================================
+# ADMIN MANUAL VIP ADD SYSTEM (/vip)
+# ==========================================
 
-    conn.commit()
-    cur.close()
-    conn.close()
+from datetime import datetime, timedelta
+
+vip_waiting_admin = set()
 
 
-def _eraser_password_valid(p):
-    return bool(re.fullmatch(r"\d{5}[A-Z]", p))
+# ===============================
+# /vip COMMAND (ADMIN ONLY)
+# ===============================
+@bot.message_handler(commands=['vip'])
+def vip_command(message):
 
-# ================= OTP =================
-_eraser_otp = {}
-_eraser_meta = {}
-
-def _eraser_gen_otp():
-    return str(random.randint(100000, 999999))
-
-
-def _eraser_send_otp(uid, resend=False):
-    now = time.time()
-    meta = _eraser_meta.get(uid, {})
-
-    if resend:
-        if meta.get("resends", 0) >= ERASER_MAX_RESEND:
-            return False, "OTP resend limit reached."
-        if now - meta.get("last", 0) < ERASER_RESEND_COOLDOWN:
-            return False, "Wait before resending OTP."
-
-    otp = _eraser_gen_otp()
-    _eraser_otp[uid] = {"otp": otp, "expires": now + ERASER_OTP_TTL}
-    _eraser_meta[uid] = {
-        "resends": meta.get("resends", 0) + (1 if resend else 0),
-        "last": now
-    }
-
-    bot.send_message(OTP_ADMIN_ID, f"🔐 ERASER OTP for admin {uid}: {otp}")
-    return True, None
-
-
-def _eraser_otp_expired(uid):
-    return uid not in _eraser_otp or time.time() > _eraser_otp[uid]["expires"]
-
-# ================= BACKUP =================
-def _eraser_create_backup():
-    now = datetime.utcnow()
-    ts = now.strftime("%Y%m%d%H%M%S")
-    fname = f"eraser_backup_{ts}.json"
-    path = os.path.join(ERASER_BACKUP_FOLDER, fname)
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT tablename
-        FROM pg_tables
-        WHERE schemaname='public'
-        """
-    )
-    tables = [r[0] for r in cur.fetchall()]
-
-    data = {}
-
-    for t in tables:
-        if t in ("eraser_settings", "eraser_backups"):
-            continue
-
-        cur.execute(f'SELECT * FROM "{t}"')
-        rows = cur.fetchall()
-        cols = [desc[0] for desc in cur.description] if rows else []
-        data[t] = [dict(zip(cols, r)) for r in rows]
-
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
-
-    cur.execute(
-        """
-        INSERT INTO eraser_backups(filename,created_at)
-        VALUES(%s,%s)
-        """,
-        (fname, now)
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    return path
-
-# ================= CALLBACK =================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("eraser_"))
-def eraser_cb(c):
-    uid = c.from_user.id
-    data = c.data
-    bot.answer_callback_query(c.id)
-
-    if uid != ADMIN_ID:
+    if message.from_user.id != ADMIN_ID:
         return
 
-    if data == "eraser_menu":
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("✔ Yes – Erase", callback_data="eraser_yes"))
-        kb.add(InlineKeyboardButton("📦 BACKUP", callback_data="eraser_backup"))
-        kb.add(InlineKeyboardButton("♻ RESTORE DATA", callback_data="eraser_restore"))
-        kb.add(InlineKeyboardButton("🔑 FORGET PASSWORD", callback_data="eraser_forgot"))
-        kb.add(InlineKeyboardButton("✖ Cancel", callback_data="eraser_cancel"))
-        bot.send_message(uid, "🧹 ERASER SYSTEM", reply_markup=kb)
+    vip_waiting_admin.add(message.from_user.id)
 
-    elif data == "eraser_cancel":
-        admin_states.pop(uid, None)
-        bot.send_message(uid, "Cancelled.", reply_markup=reply_menu(uid))
+    bot.send_message(
+        message.chat.id,
+        "Turo min user ID ɗin wanda kake son saka a VIP."
+    )
 
-    elif data == "eraser_backup":
-        admin_states[uid] = {"state": "eraser_backup_pass"}
-        bot.send_message(uid, "Enter ERASER password:")
 
-    elif data == "eraser_yes":
-        admin_states[uid] = {"state": "eraser_erase_pass"}
-        bot.send_message(uid, "Enter ERASER password:")
+# ===============================
+# RECEIVE USER ID
+# ===============================
+@bot.message_handler(func=lambda m: m.from_user.id in vip_waiting_admin)
+def receive_vip_user_id(message):
 
-    elif data == "eraser_restore":
-        admin_states[uid] = {"state": "eraser_restore_pass"}
-        bot.send_message(uid, "Enter ERASER password:")
+    if message.from_user.id != ADMIN_ID:
+        return
 
-    elif data == "eraser_forgot":
-        _eraser_send_otp(uid)
-        admin_states[uid] = {"state": "eraser_wait_otp"}
-        bot.send_message(uid, "OTP sent. Enter OTP:")
+    try:
+        user_id = int(message.text.strip())
+    except:
+        bot.send_message(message.chat.id, "ID bai inganta ba. Tura lambar user ID kawai.")
+        return
 
-# ================= TEXT =================
-@bot.message_handler(
-    func=lambda m: m.from_user.id == ADMIN_ID
-    and admin_states.get(m.from_user.id, {}).get("state", "").startswith("eraser_")
-)
-def eraser_text(m):
-    uid = m.from_user.id
-    text = m.text.strip()
-    st = admin_states[uid]["state"]
+    vip_waiting_admin.remove(message.from_user.id)
 
-    # ---- BACKUP PASS ----
-    if st == "eraser_backup_pass":
-        if text != _eraser_get_password():
-            bot.send_message(uid, "❌ Wrong password.", reply_markup=eraser_reset_kb())
+    # ===============================
+    # CHECK IF USER IS IN GROUP
+    # ===============================
+    try:
+        member = bot.get_chat_member(VIP_GROUP_ID, user_id)
+
+        if member.status not in ["member", "administrator", "creator"]:
+            bot.send_message(
+                message.chat.id,
+                "Wannan user baya cikin group ɗin."
+            )
             return
 
-        path = _eraser_create_backup()
-        admin_states.pop(uid)
-        bot.send_message(uid, f"✔ Backup created:\n{path}")
+    except:
+        bot.send_message(
+            message.chat.id,
+            "Wannan user baya cikin group ɗin."
+        )
+        return
 
-    # ---- ERASE PASS ----
-    elif st == "eraser_erase_pass":
-        if text != _eraser_get_password():
-            bot.send_message(uid, "❌ Wrong password.", reply_markup=eraser_reset_kb())
-            return
+    # ===============================
+    # CREATE JOIN + EXPIRE DATE
+    # ===============================
+    join_date = datetime.now()
 
-        _eraser_create_backup()
+    if VIP_DURATION_UNIT == "minutes":
+        expire_at = join_date + timedelta(minutes=VIP_DURATION_VALUE)
+    else:
+        expire_at = join_date + timedelta(days=VIP_DURATION_VALUE)
 
+    # ===============================
+    # INSERT OR UPDATE USER
+    # ===============================
+    try:
         conn = get_conn()
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT tablename
-            FROM pg_tables
-            WHERE schemaname='public'
-        """)
-        tables = [r[0] for r in cur.fetchall()]
-
-        for t in tables:
-            if t not in ("eraser_settings", "eraser_backups"):
-                try:
-                    cur.execute(f'TRUNCATE TABLE "{t}" RESTART IDENTITY CASCADE')
-                except Exception:
-                    pass
+            INSERT INTO vip_members (user_id, join_date, expire_at, status, warn1_sent, warn2_sent)
+            VALUES (%s, %s, %s, 'active', FALSE, FALSE)
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                join_date = EXCLUDED.join_date,
+                expire_at = EXCLUDED.expire_at,
+                status = 'active',
+                warn1_sent = FALSE,
+                warn2_sent = FALSE
+        """, (user_id, join_date, expire_at))
 
         conn.commit()
         cur.close()
         conn.close()
 
-        admin_states.pop(uid)
-        bot.send_message(uid, "🧹 ERASE COMPLETE.")
+    except:
+        bot.send_message(message.chat.id, "An samu matsala wajen saka user a DB.")
+        return
 
-    # ---- RESTORE PASS ----
-    elif st == "eraser_restore_pass":
-        if text != _eraser_get_password():
-            bot.send_message(uid, "❌ Wrong password.", reply_markup=eraser_reset_kb())
-            return
+    # ===============================
+    # SUCCESS MESSAGE TO ADMIN
+    # ===============================
+    
+    # ✅ DISPLAY FIX (Nigeria Time +1 hour)
+    expire_local = expire_at + timedelta(hours=1)
+    expire_text = expire_local.strftime("%d %B %Y %H:%M:%S")
 
-        ok, info = _eraser_auto_restore_latest()
-        admin_states.pop(uid, None)
+    bot.send_message(
+        message.chat.id,
+        f"An saka user {user_id} a VIP.\n\n"
+        f"Za a cire shi ranar:\n{expire_text}"
+    )
 
-        if ok:
-            bot.send_message(
-                uid,
-                f"♻ <b>RESTORE COMPLETE</b>\n\n📦 Backup: <code>{info}</code>",
-                parse_mode="HTML"
-            )
-        else:
-            bot.send_message(
-                uid,
-                f"❌ <b>Restore failed</b>\n\n{info}",
-                parse_mode="HTML"
-            )
 
-    # ---- OTP ----
-    elif st == "eraser_wait_otp":
-        if _eraser_otp_expired(uid):
-            bot.send_message(uid, "OTP expired.")
-            return
 
-        if text != _eraser_otp[uid]["otp"]:
-            bot.send_message(uid, "❌ OTP ba daidai ba. Tambayi admin mai karɓa.")
-            return
-
-        admin_states[uid] = {"state": "eraser_new_pass"}
-        bot.send_message(uid, "Enter new password:")
-
-    elif st == "eraser_new_pass":
-        if not _eraser_password_valid(text):
-            bot.send_message(uid, "Invalid format. Example: 66788K")
-            return
-
-        admin_states[uid] = {"state": "eraser_confirm_pass", "tmp": text}
-        bot.send_message(uid, "Confirm password:")
-
-    elif st == "eraser_confirm_pass":
-        if text != admin_states[uid]["tmp"]:
-            bot.send_message(uid, "Passwords do not match.")
-            return
-
-        _eraser_set_password(text)
-        admin_states.pop(uid)
-        bot.send_message(uid, "✅ Password changed successfully.")
 
 
 # ================= AUTO MERGE RESTORE (ADD-ON ONLY) =================
@@ -3023,6 +5750,27 @@ def admin_feature_enabled():
 
     return row and row[0] == 1
 
+# ======================================================
+@bot.message_handler(content_types=['new_chat_members'])
+def get_group_id(message):
+
+    try:
+        chat_id = message.chat.id
+        chat_title = message.chat.title or "Unknown"
+
+        bot.send_message(
+            ADMIN_ID,
+            f"""✅ GROUP DETECTED
+
+📛 Name: {chat_title}
+🆔 ID:
+<code>{chat_id}</code>
+""",
+            parse_mode="HTML"
+        )
+
+    except:
+        pass
 
 # ================= GETID (FILE_NAME SEARCH) =================
 @bot.message_handler(commands=["getid"])
@@ -3932,6 +6680,9 @@ def start_handler(msg):
 
     bot.send_message(msg.chat.id, "Welcome!")
 
+
+
+
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
 # ========= BUYD (IDS + GROUP_KEY SUPPORT | UPDATED SAFE VERSION) =========
 from psycopg2.extras import RealDictCursor
@@ -4078,7 +6829,12 @@ def buyd_deeplink_handler(msg):
         # ================= BUTTONS =================
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+
+        # ✅ KAWAI NAN AKA KARA
+        kb.row(
+            InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
+        )
 
         first_name = msg.from_user.first_name or ""
         last_name = msg.from_user.last_name or ""
@@ -4113,219 +6869,219 @@ Danna Pay now domin biya 👇👇
         cur.close()
         conn.close()
 
+# ======= GROUPITEM (IDS + GROUP_KEY SUPPORT | UPDATED FORMAT) =========        
+from psycopg2.extras import RealDictCursor        
+import uuid        
 
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))        
+def groupitem_deeplink_handler(msg):        
 
-# ======= GROUPITEM (IDS + GROUP_KEY SUPPORT | UPDATED FORMAT) =========
-from psycopg2.extras import RealDictCursor
-import uuid
+    try:        
+        uid = msg.from_user.id        
+        raw = msg.text.split("groupitem_", 1)[1].strip()        
+    except Exception as e:        
+        return        
 
-@bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))
-def groupitem_deeplink_handler(msg):
+    conn = get_conn()        
+    if not conn:        
+        return        
 
-    try:
-        uid = msg.from_user.id
-        raw = msg.text.split("groupitem_", 1)[1].strip()
-    except Exception:
-        return
+    cur = conn.cursor(cursor_factory=RealDictCursor)        
 
-    conn = get_conn()
-    if not conn:
-        return
+    items = []        
 
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    if all(x.strip().isdigit() for x in raw.replace("_", ",").split(",")):        
 
-    items = []
+        sep = "_" if "_" in raw else ","        
+        item_ids = [int(x) for x in raw.split(sep) if x.strip().isdigit()]        
 
-    # ================= MODE 1: IDS =================
-    if all(x.strip().isdigit() for x in raw.replace("_", ",").split(",")):
+        if not item_ids:        
+            cur.close()        
+            conn.close()        
+            return        
 
-        sep = "_" if "_" in raw else ","
-        item_ids = [int(x) for x in raw.split(sep) if x.strip().isdigit()]
+        placeholders = ",".join(["%s"] * len(item_ids))        
 
-        if not item_ids:
-            cur.close()
-            conn.close()
-            return
+        cur.execute(        
+            f"""        
+            SELECT id, title, price, file_id, group_key        
+            FROM items        
+            WHERE id IN ({placeholders})        
+            """,        
+            tuple(item_ids)        
+        )        
 
-        placeholders = ",".join(["%s"] * len(item_ids))
+        items = cur.fetchall()        
 
-        cur.execute(
-            f"""
-            SELECT id, title, price, file_id, group_key
-            FROM items
-            WHERE id IN ({placeholders})
-            """,
-            tuple(item_ids)
-        )
+    else:        
 
-        items = cur.fetchall()
+        cur.execute(        
+            """        
+            SELECT id, title, price, file_id, group_key        
+            FROM items        
+            WHERE group_key=%s        
+            ORDER BY id ASC        
+            """,        
+            (raw,)        
+        )        
 
-    # ================= MODE 2: GROUP_KEY =================
-    else:
+        items = cur.fetchall()        
 
-        cur.execute(
-            """
-            SELECT id, title, price, file_id, group_key
-            FROM items
-            WHERE group_key=%s
-            ORDER BY id ASC
-            """,
-            (raw,)
-        )
+    if not items:        
+        cur.close()        
+        conn.close()        
+        return        
 
-        items = cur.fetchall()
+    items = [i for i in items if i.get("file_id")]        
+    if not items:        
+        cur.close()        
+        conn.close()        
+        return        
 
-    if not items:
-        cur.close()
-        conn.close()
-        return
+    item_ids_clean = [i["id"] for i in items]        
+    placeholders = ",".join(["%s"] * len(item_ids_clean))        
 
-    # ================= FILE CHECK =================
-    items = [i for i in items if i.get("file_id")]
-    if not items:
-        cur.close()
-        conn.close()
-        return
+    try:        
+        cur.execute(        
+            f"""        
+            SELECT 1 FROM user_movies        
+            WHERE user_id=%s        
+              AND item_id IN ({placeholders})        
+            LIMIT 1        
+            """,        
+            (uid, *item_ids_clean)        
+        )        
 
-    item_ids_clean = [i["id"] for i in items]
-    placeholders = ",".join(["%s"] * len(item_ids_clean))
+        owned = cur.fetchone()        
 
-    # ================= OWNERSHIP CHECK =================
-    try:
-        cur.execute(
-            f"""
-            SELECT 1 FROM user_movies
-            WHERE user_id=%s
-              AND item_id IN ({placeholders})
-            LIMIT 1
-            """,
-            (uid, *item_ids_clean)
-        )
-        owned = cur.fetchone()
-    except Exception:
-        cur.close()
-        conn.close()
-        return
+    except Exception as e:        
+        cur.close()        
+        conn.close()        
+        return        
 
-    if owned:
-        cur.close()
-        conn.close()
-        return
+    if owned:        
+        try:  
+            bot.send_message(uid, "✅ Ka riga ka mallaki wannan fim.")  
+        except Exception:  
+            pass
 
-    # ================= GROUP PRICING =================
-    groups = {}
-    for i in items:
-        key = i["group_key"] or f"single_{i['id']}"
-        if key not in groups:
-            groups[key] = int(i["price"] or 0)
+        cur.close()        
+        conn.close()        
+        return        
 
-    total = sum(groups.values())
-    item_count = len(items)
+    groups = {}        
+    for i in items:        
+        key = i["group_key"] or f"single_{i['id']}"        
+        if key not in groups:        
+            groups[key] = int(i["price"] or 0)        
 
-    if total <= 0:
-        cur.close()
-        conn.close()
-        return
+    total = sum(groups.values())        
+    item_count = len(items)        
 
-    # ================= REUSE / CREATE ORDER =================
-    try:
-        cur.execute(
-            f"""
-            SELECT o.id
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.id
-            WHERE o.user_id=%s
-              AND o.paid=0
-              AND oi.item_id IN ({placeholders})
-            GROUP BY o.id
-            HAVING COUNT(DISTINCT oi.item_id)=%s
-            LIMIT 1
-            """,
-            (uid, *item_ids_clean, len(item_ids_clean))
-        )
-        row = cur.fetchone()
-    except Exception:
-        cur.close()
-        conn.close()
-        return
+    if total <= 0:        
+        cur.close()        
+        conn.close()        
+        return        
 
-    if row:
-        order_id = row["id"]
-    else:
-        order_id = str(uuid.uuid4())
-        try:
-            cur.execute(
-                "INSERT INTO orders (id, user_id, amount, paid) VALUES (%s,%s,%s,0)",
-                (order_id, uid, total)
-            )
+    try:        
+        cur.execute(        
+            f"""        
+            SELECT o.id        
+            FROM orders o        
+            JOIN order_items oi ON oi.order_id = o.id        
+            WHERE o.user_id=%s        
+              AND o.paid=0        
+              AND oi.item_id IN ({placeholders})        
+            GROUP BY o.id        
+            HAVING COUNT(DISTINCT oi.item_id)=%s        
+            LIMIT 1        
+            """,        
+            (uid, *item_ids_clean, len(item_ids_clean))        
+        )        
+        row = cur.fetchone()        
+    except Exception as e:        
+        cur.close()        
+        conn.close()        
+        return        
 
-            for i in items:
-                cur.execute(
-                    """
-                    INSERT INTO order_items (order_id, item_id, file_id, price)
-                    VALUES (%s,%s,%s,%s)
-                    """,
-                    (order_id, i["id"], i["file_id"], int(i["price"] or 0))
-                )
+    if row:        
+        order_id = row["id"]        
+    else:        
+        order_id = str(uuid.uuid4())        
+        try:        
+            cur.execute(        
+                "INSERT INTO orders (id, user_id, amount, paid) VALUES (%s,%s,%s,0)",        
+                (order_id, uid, total)        
+            )        
 
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            cur.close()
-            conn.close()
-            return
+            for i in items:        
+                cur.execute(        
+                    """        
+                    INSERT INTO order_items (order_id, item_id, file_id, price)        
+                    VALUES (%s,%s,%s,%s)        
+                    """,        
+                    (order_id, i["id"], i["file_id"], int(i["price"] or 0))        
+                )        
 
-    # ================= PAYSTACK PAYMENT LINK =================
-    try:
-        pay_url = create_paystack_payment(
-            uid,
-            order_id,
-            total,
-            items[0]["title"]  # same format as before
-        )
-    except Exception:
-        cur.close()
-        conn.close()
-        return
+            conn.commit()        
+        except Exception as e:        
+            conn.rollback()        
+            cur.close()        
+            conn.close()        
+            return        
 
-    if not pay_url:
-        cur.close()
-        conn.close()
-        return
+    try:        
+        pay_url = create_paystack_payment(        
+            uid,        
+            order_id,        
+            total,        
+            items[0]["title"]        
+        )        
+    except Exception as e:        
+        cur.close()        
+        conn.close()        
+        return        
 
-    # ================= BUTTONS =================
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
-    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
+    if not pay_url:        
+        cur.close()        
+        conn.close()        
+        return        
 
-    first_name = msg.from_user.first_name or ""
-    last_name = msg.from_user.last_name or ""
-    full_name = f"{first_name} {last_name}".strip()
+    kb = InlineKeyboardMarkup()        
+    kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))        
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))        
+    kb.add(InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"))        
 
-    # ================= NEW FORMAT MESSAGE =================
-    bot.send_message(
-        uid,
-        f"""🧾 <b>Order Created</b>
+    first_name = msg.from_user.first_name or ""        
+    last_name = msg.from_user.last_name or ""        
+    full_name = f"{first_name} {last_name}".strip()        
 
-👤 <b>Name:</b> {full_name}
+    sent = bot.send_message(        
+        uid,        
+        f"""🧾 <b>Order Created</b>        
 
-🎬 <b>You will buy this film</b>
-🎥 {items[0]["title"]}
+👤 <b>Name:</b> {full_name}        
 
-📦 Films: {item_count}
-💵 Total: ₦{total}
+🎬 <b>You will buy this film</b>        
+🎥 {items[0]["title"]}        
 
-🆔 Order ID:
-<code>{order_id}</code>
+📦 Films: {item_count}        
+💵 Total: ₦{total}        
 
-Danna Pay now domin biya 👇👇
-""",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+🆔 Order ID:        
+<code>{order_id}</code>        
 
-    cur.close()
+Danna Pay now domin biya 👇👇        
+""",        
+        parse_mode="HTML",        
+        reply_markup=kb        
+    )        
+
+    ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)        
+
+    cur.close()        
     conn.close()
+
 
 
 # ================= ADMIN MANUAL SUPPORT SYSTEM =================
@@ -4652,210 +7408,193 @@ import time
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ======================================================
-# PAY ALL (SUPPORT IDS + GROUP_KEY + DEFAULT)
-# ======================================================
-@bot.callback_query_handler(func=lambda c: c.data.startswith("payall"))
-def pay_all_unpaid(call):
 
-    user_id = call.from_user.id
-    bot.answer_callback_query(call.id)
-
-    parts = call.data.split(":", 1)
-    raw = parts[1].strip() if len(parts) > 1 else ""
-
-    conn = get_conn()
-    if not conn:
-        return
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    try:
-
-        # ==========================================
-        # FETCH ITEMS
-        # ==========================================
-        base_query = """
-            SELECT
-                o.id AS order_id,
-                oi.item_id,
-                oi.file_id,
-                oi.price,
-                i.title,
-                i.group_key
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.id
-            JOIN items i ON i.id = oi.item_id
-            WHERE o.user_id=%s AND o.paid=0
-        """
-
-        params = [user_id]
-
-        if raw and raw.replace("_", ",").replace(",", "").isdigit():
-            ids = [int(x) for x in raw.replace("_", ",").split(",") if x.strip().isdigit()]
-            if not ids:
-                return
-            base_query += " AND oi.item_id = ANY(%s)"
-            params.append(ids)
-
-        elif raw:
-            base_query += " AND i.group_key=%s"
-            params.append(raw)
-
-        cur.execute(base_query, tuple(params))
-        rows = cur.fetchall()
-
-        if not rows:
-            return
-
-        # ==========================================
-        # REMOVE INVALID
-        # ==========================================
-        rows = [
-            r for r in rows
-            if r["file_id"] and int(r["price"] or 0) > 0
-        ]
-
-        if not rows:
-            return
-
-        # ==========================================
-        # REMOVE OWNED + SHOW WARNING
-        # ==========================================
-        clean_rows = []
-        owned_detected = False
-
-        for r in rows:
-            cur.execute(
-                """
-                SELECT 1 FROM user_movies
-                WHERE user_id=%s AND item_id=%s
-                LIMIT 1
-                """,
-                (user_id, r["item_id"])
-            )
-            if cur.fetchone():
-                owned_detected = True
-            else:
-                clean_rows.append(r)
-
-        rows = clean_rows
-
-        # ===== IF EVERYTHING ALREADY OWNED =====
-        if not rows and owned_detected:
-
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("🎬 MY MOVIES", callback_data="my_movies"))
-
-            bot.send_message(
-                user_id,
-                """✅ <b>Ka riga ka taba siyan wannan fim.</b>
-
-Zaka iya duba shi ka sake karba in kana bukata anan👇👇""",
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-            return
-
-        if not rows:
-            return
-
-        # ==========================================
-        # GROUP SAFE TOTAL
-        # ==========================================
-        groups = {}
-
-        for r in rows:
-            key = r["group_key"] or f"single_{r['item_id']}"
-            price = int(r["price"] or 0)
-
-            if key not in groups:
-                groups[key] = {
-                    "price": price,
-                    "items": []
-                }
-
-            groups[key]["items"].append(r)
-
-        total_amount = sum(g["price"] for g in groups.values())
-
-        if total_amount <= 0:
-            return
-
-        film_titles = list({r["title"] for r in rows})
-        films_count = len(rows)
-
-        # ==========================================
-        # EXISTING UNPAID ORDER
-        # ==========================================
-        cur.execute(
-            """
-            SELECT id
-            FROM orders
-            WHERE user_id=%s AND paid=0
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (user_id,)
-        )
-        old = cur.fetchone()
-
-        if not old:
-            return
-
-        order_id = old["id"]
-
-        cur.execute(
-            "UPDATE orders SET amount=%s WHERE id=%s",
-            (total_amount, order_id)
-        )
-
-        conn.commit()
-
-        pay_url = create_paystack_payment(
-            user_id,
-            order_id,
-            total_amount,
-            "Pay All Orders"
-        )
-
-        if not pay_url:
-            return
-
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))
-
-        first_name = call.from_user.first_name or ""
-        last_name = call.from_user.last_name or ""
-        full_name = f"{first_name} {last_name}".strip()
-
-        bot.send_message(
-            user_id,
-            f"""🧾 <b>Pay All Orders</b>
-
-👤 <b>Name:</b> {full_name}
-
-🎬 <b>You will buy this film:</b>
-{", ".join(film_titles)}
-
-📦 <b>Films:</b> {films_count}
-📦 <b>Groups:</b> {len(groups)}
-💵 <b>Total:</b> ₦{int(total_amount)}
-
-🆔 <b>Order ID:</b>
-<code>{order_id}</code>
-
-Danna Pay now domin biya 👇👇""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
-    except Exception:
-        conn.rollback()
-
-    finally:
-        cur.close()
+# PAY ALL (SUPPORT IDS + GROUP_KEY + DEFAULT)  
+# ======================================================  
+@bot.callback_query_handler(func=lambda c: c.data.startswith("payall"))  
+def pay_all_unpaid(call):  
+  
+    user_id = call.from_user.id  
+    bot.answer_callback_query(call.id)  
+  
+    parts = call.data.split(":", 1)  
+    raw = parts[1].strip() if len(parts) > 1 else ""  
+  
+    conn = get_conn()  
+    if not conn:  
+        return  
+  
+    cur = conn.cursor(cursor_factory=RealDictCursor)  
+  
+    try:  
+  
+        # ==========================================  
+        # FETCH ITEMS  
+        # ==========================================  
+        base_query = """  
+            SELECT  
+                o.id AS order_id,  
+                oi.item_id,  
+                oi.file_id,  
+                oi.price,  
+                i.title,  
+                i.group_key  
+            FROM orders o  
+            JOIN order_items oi ON oi.order_id = o.id  
+            JOIN items i ON i.id = oi.item_id  
+            WHERE o.user_id=%s AND o.paid=0  
+        """  
+  
+        params = [user_id]  
+  
+        if raw and raw.replace("_", ",").replace(",", "").isdigit():  
+            ids = [int(x) for x in raw.replace("_", ",").split(",") if x.strip().isdigit()]  
+            if not ids:  
+                return  
+            base_query += " AND oi.item_id = ANY(%s)"  
+            params.append(ids)  
+  
+        elif raw:  
+            base_query += " AND i.group_key=%s"  
+            params.append(raw)  
+  
+        cur.execute(base_query, tuple(params))  
+        rows = cur.fetchall()  
+  
+        if not rows:  
+            return  
+  
+        rows = [  
+            r for r in rows  
+            if r["file_id"] and int(r["price"] or 0) > 0  
+        ]  
+  
+        if not rows:  
+            return  
+  
+        clean_rows = []  
+        owned_detected = False  
+  
+        for r in rows:  
+            cur.execute(  
+                """  
+                SELECT 1 FROM user_movies  
+                WHERE user_id=%s AND item_id=%s  
+                LIMIT 1  
+                """,  
+                (user_id, r["item_id"])  
+            )  
+            if cur.fetchone():  
+                owned_detected = True  
+            else:  
+                clean_rows.append(r)  
+  
+        rows = clean_rows  
+  
+        # ✅ POPUP INSTEAD OF MESSAGE  
+        if not rows and owned_detected:  
+            bot.answer_callback_query(call.id, "✅ Ka riga ka mallaki wannan fim", show_alert=True)  
+            return  
+  
+        if not rows:  
+            return  
+  
+        groups = {}  
+  
+        for r in rows:  
+            key = r["group_key"] or f"single_{r['item_id']}"  
+            price = int(r["price"] or 0)  
+  
+            if key not in groups:  
+                groups[key] = {  
+                    "price": price,  
+                    "items": []  
+                }  
+  
+            groups[key]["items"].append(r)  
+  
+        total_amount = sum(g["price"] for g in groups.values())  
+  
+        if total_amount <= 0:  
+            return  
+  
+        film_titles = list({r["title"] for r in rows})  
+        films_count = len(rows)  
+  
+        cur.execute(  
+            """  
+            SELECT id  
+            FROM orders  
+            WHERE user_id=%s AND paid=0  
+            ORDER BY id DESC  
+            LIMIT 1  
+            """,  
+            (user_id,)  
+        )  
+        old = cur.fetchone()  
+  
+        if not old:  
+            return  
+  
+        order_id = old["id"]  
+  
+        cur.execute(  
+            "UPDATE orders SET amount=%s WHERE id=%s",  
+            (total_amount, order_id)  
+        )  
+  
+        conn.commit()  
+  
+        pay_url = create_paystack_payment(  
+            user_id,  
+            order_id,  
+            total_amount,  
+            "Pay All Orders"  
+        )  
+  
+        if not pay_url:  
+            return  
+  
+        kb = InlineKeyboardMarkup()  
+        kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))  
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))  
+        kb.add(InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"))  
+  
+        first_name = call.from_user.first_name or ""  
+        last_name = call.from_user.last_name or ""  
+        full_name = f"{first_name} {last_name}".strip()  
+  
+        sent = bot.send_message(  
+            user_id,  
+            f"""🧾 <b>Pay All Orders</b>  
+  
+👤 <b>Name:</b> {full_name}  
+  
+🎬 <b>You will buy this film:</b>  
+{", ".join(film_titles)}  
+  
+📦 <b>Films:</b> {films_count}  
+📦 <b>Groups:</b> {len(groups)}  
+💵 <b>Total:</b> ₦{int(total_amount)}  
+  
+🆔 <b>Order ID:</b>  
+<code>{order_id}</code>  
+  
+Danna Pay now domin biya 👇👇""",  
+            parse_mode="HTML",  
+            reply_markup=kb  
+        )  
+  
+        # ✅ SAVE MESSAGE FOR DELETE  
+        ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)  
+  
+    except Exception:  
+        conn.rollback()  
+  
+    finally:  
+        cur.close()  
         conn.close()
+
 
 import uuid
 from datetime import datetime
@@ -5745,6 +8484,7 @@ def handle_callback(c):
 
 
 
+
     from psycopg2.extras import RealDictCursor  
     import uuid  
 
@@ -5839,6 +8579,7 @@ def handle_callback(c):
         kb = InlineKeyboardMarkup()  
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))  
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))  
+        kb.add(InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"))  
 
         first_name = c.from_user.first_name or ""  
         last_name = c.from_user.last_name or ""  
@@ -5852,7 +8593,7 @@ def handle_callback(c):
 
         item_count = sum(len(g["items"]) for g in groups.values())  
 
-        bot.send_message(  
+        msg = bot.send_message(  
             uid,  
             f"""🧾 <b>Order Created</b>  
 
@@ -5873,13 +8614,16 @@ Danna Pay now domin biya 👇👇
             reply_markup=kb  
         )  
 
+        # ✅ SAVE MESSAGE ID
+        ORDER_MESSAGES[order_id] = (msg.chat.id, msg.message_id)
+
         bot.answer_callback_query(c.id)  
         return  
 
 
 # ==================================================  
-    # BUY / BUYDM / BUYGROUP  ✅ (Support IDS + GROUP_KEY)  
-    # ==================================================  
+    # BUY / BUYDM / BUYGROUP  
+# ==================================================  
     if data.startswith("buy:") or data.startswith("buydm:") or data.startswith("buygroup:"):  
 
         raw = data.split(":", 1)[1].strip()  
@@ -5945,7 +8689,7 @@ Danna Pay now domin biya 👇👇
             ids_clean = [i["id"] for i in items]  
             placeholders2 = ",".join(["%s"] * len(ids_clean))  
 
-            # ================= FULL OWNERSHIP PROTECTION =================
+            # ✅ OWNERSHIP CHECK POPUP
             cur.execute(  
                 f"""  
                 SELECT COUNT(DISTINCT item_id) as total_owned  
@@ -5958,16 +8702,11 @@ Danna Pay now domin biya 👇👇
             owned_count = cur.fetchone()["total_owned"]  
 
             if owned_count == len(ids_clean):  
-
-                kb = InlineKeyboardMarkup()  
-                kb.add(InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies"))  
-
-                bot.send_message(  
-                    uid,  
-                    "✅ <b>Ka riga ka mallaki wannan fim.</b>\n\nZaka iya sake karɓarsa a 📽PAID MOVIES.",  
-                    parse_mode="HTML",  
-                    reply_markup=kb  
-                )  
+                bot.answer_callback_query(
+                    c.id,
+                    "✅ Ka riga ka mallaki wannan fim.",
+                    show_alert=True
+                )
                 return  
 
             groups = {}  
@@ -5982,7 +8721,6 @@ Danna Pay now domin biya 👇👇
                 bot.answer_callback_query(c.id, "❌ Farashi bai dace ba.")  
                 return  
 
-            # ================= DUPLICATE UNPAID ORDER PROTECTION =================
             cur.execute(  
                 f"""  
                 SELECT o.id  
@@ -6043,8 +8781,9 @@ Danna Pay now domin biya 👇👇
         kb = InlineKeyboardMarkup()  
         kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))  
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}"))  
+        kb.add(InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"))  
 
-        bot.send_message(  
+        msg = bot.send_message(  
             uid,  
             f"""🛒 <b>ORDER SUMMARY</b>  
 
@@ -6060,8 +8799,14 @@ Danna Pay now domin biya 👇👇
             reply_markup=kb  
         )  
 
+        # ✅ SAVE MESSAGE ID
+        ORDER_MESSAGES[order_id] = (msg.chat.id, msg.message_id)
+
         bot.answer_callback_query(c.id)  
         return
+
+
+
 
     # ================= MY MOVIES =================
     if data == "my_movies":
@@ -6666,7 +9411,10 @@ Danna Pay now domin biya 👇👇
     if data == "weak_update":
         start_weak_update(msg=c.message)
         return
-    # checkjoin: after user clicks I've Joined, prompt language selection
+   
+
+
+ # checkjoin: after user clicks I've Joined, prompt language selection
     if data == "checkjoin":
         try:
             if check_join(uid):
@@ -6681,11 +9429,14 @@ Danna Pay now domin biya 👇👇
                        InlineKeyboardButton("Fulani/Fulfulde", callback_data="setlang_ff"))
                 bot.send_message(uid, tr_user(uid, "choose_language_prompt", default="Choose language / Zaɓi harshe:"), reply_markup=kb)
             else:
-                bot.answer_callback_query(callback_query_id=c.id, text=tr_user(uid, "not_joined", default="❌ Baka shiga ba."))
+                bot.answer_callback_query(
+                    callback_query_id=c.id,
+                    text="❌ Baka shiga channel dinmu ba.\nDomin ci gaba dole sai ka shiga.",
+                    show_alert=True
+                )
         except Exception as e:
             print("checkjoin callback error:", e)
         return
-
     # show change language menu (global button)
     if data == "change_language":
         try:
@@ -6812,7 +9563,7 @@ Danna Pay now domin biya 👇👇
 
 
 
-    # Support Help -> Open admin DM directly (NO messages to admin, NO notifications)
+    # Support Help -> Open admin DM directly (NO messages to admin, NO notificationnotifications)
     if data == "support_help":
         try:
             bot.answer_callback_query(callback_query_id=c.id)
